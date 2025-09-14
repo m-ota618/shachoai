@@ -1,8 +1,5 @@
 // src/api/gas.ts
-// フロントは /api/gas（Vercel Functions）に JSON で投げるだけ。
-// 秘密（GAS_ENDPOINT / API_TOKEN）は関数側で保持・付与します。
-
-import { supabase } from '../lib/supabase'
+import { supabase } from '../lib/supabase';
 import type {
   UnansweredItem,
   DraftItem,
@@ -13,123 +10,130 @@ import type {
   PredictResult,
   BulkDryResult,
   BulkRunResult,
-} from '../types'
+} from '../types';
 
-// フロント側に残して良いのは経路だけ
-const API_BASE = (import.meta.env.VITE_API_BASE as string) || '/api'
+/** フロント→サーバレス関数の基底URL（未設定なら /api） */
+const API_BASE = (import.meta.env.VITE_API_BASE as string) || '/api';
+const GAS_URL = `${API_BASE.replace(/\/$/, '')}/gas`;
 
-/**
- * Functions（/api/gas）に action/payload を JSON で投げる
- * - Authorization: Bearer <supabase access token> を必ず付与
- * - 関数側で GAS に x-www-form-urlencoded 変換 + token 付与
- */
-async function postForm<T = unknown>(action: string, payload?: unknown): Promise<T> {
-  // サインイン済みならアクセストークンを取得
-  const { data } = await supabase.auth.getSession()
-  const accessToken = data.session?.access_token
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (accessToken) headers.Authorization = `Bearer ${accessToken}`
+/** /api/gas に JSON POST（必ず Authorization: Bearer を付与） */
+async function postJSON<T = unknown>(action: string, payload?: unknown): Promise<T> {
+  // Supabase セッションからアクセストークン取得
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
 
-  const res = await fetch(`${API_BASE}/gas`, {
+  const res = await fetch(GAS_URL, {
     method: 'POST',
-    headers,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     body: JSON.stringify({ action, payload }),
-  })
+  });
 
-  const text = await res.text().catch(() => '')
+  const text = await res.text();
   if (!res.ok) {
-    // 関数側の代表的なエラーを見やすく
-    // missing_bearer / unauthorized / forbidden_origin / forbidden_domain / missing_env: ...
-    throw new Error(text || `HTTP ${res.status}`)
+    // サーバ側のエラーメッセージをそのまま見せる
+    throw new Error(text || `HTTP ${res.status}`);
   }
-
   try {
-    return JSON.parse(text) as T // JSONならパース
+    return JSON.parse(text) as T;
   } catch {
-    // true/falseや文字列などもそのまま返せるように
-    return text as unknown as T
+    // GASが true/false や文字列を返すケースもある
+    return text as unknown as T;
   }
 }
 
 function arr<T>(r: unknown): T[] {
-  if (Array.isArray(r)) return r as T[]
+  if (Array.isArray(r)) return r as T[];
   if (r && typeof r === 'object' && Array.isArray((r as any).items)) {
-    return (r as any).items as T[]
+    return (r as any).items as T[];
   }
-  return []
+  return [];
 }
 
 /* ===================== wrappers ===================== */
 
-export const getUnanswered = async (): Promise<UnansweredItem[]> =>
-  arr<UnansweredItem>(await postForm('getUnanswered'))
-
-export const getDrafts = async (): Promise<DraftItem[]> =>
-  arr<DraftItem>(await postForm('getDrafts'))
-
-export const getDetail = async (row: number): Promise<Detail> => {
-  const r = await postForm<Detail>('getDetail', { row })
-  return (r as any).entry ?? (r as any)
+export async function getUnanswered(): Promise<UnansweredItem[]> {
+  const r = await postJSON('getUnanswered');
+  return arr<UnansweredItem>(r);
 }
 
-export const saveAnswer = async (row: number, answer: string, url: string): Promise<boolean> => {
-  const r = await postForm('saveAnswer', { row, answer, url })
-  return r === true || (r as any)?.ok === true
+export async function getDrafts(): Promise<DraftItem[]> {
+  const r = await postJSON('getDrafts');
+  return arr<DraftItem>(r);
 }
 
-export const completeFromWeb = async (row: number): Promise<boolean> => {
-  const r = await postForm('completeFromWeb', { row })
-  return r === true || (r as any)?.ok === true
+export async function getDetail(row: number): Promise<Detail> {
+  const r = await postJSON<Detail>('getDetail', { row });
+  return (r as any).entry ?? (r as any);
 }
 
-export const noChangeFromWeb = async (row: number): Promise<boolean> => {
-  const r = await postForm('noChangeFromWeb', { row })
-  return r === true || (r as any)?.ok === true
+export async function saveAnswer(row: number, answer: string, url: string): Promise<boolean> {
+  const r = await postJSON('saveAnswer', { row, answer, url });
+  return r === true || (r as any)?.ok === true;
 }
 
-export const getHistoryList = async (): Promise<HistoryItem[]> =>
-  arr<HistoryItem>(await postForm('getHistoryList'))
-
-export const getHistoryDetail = async (row: number): Promise<HistoryDetail> => {
-  const r = await postForm<HistoryDetail>('getHistoryDetail', { row })
-  return (r as any).entry ?? (r as any)
+export async function completeFromWeb(row: number): Promise<boolean> {
+  const r = await postJSON('completeFromWeb', { row });
+  return r === true || (r as any)?.ok === true;
 }
 
-export const getAllTopicOptionsPinnedFirst = async (): Promise<string[]> => {
-  const r = await postForm('getAllTopicOptionsPinnedFirst')
-  if (Array.isArray(r)) return r as string[]
-  return ((r as any)?.items as string[]) || []
+export async function noChangeFromWeb(row: number): Promise<boolean> {
+  const r = await postJSON('noChangeFromWeb', { row });
+  return r === true || (r as any)?.ok === true;
 }
 
-export const getUpdateData = async (opt: {
-  q?: string
-  topicKey?: string
-  topics?: string[]
-  area?: string
-  limit?: number
-  offset?: number
-  pinnedFirst?: boolean
-}): Promise<UpdateItem[]> => arr<UpdateItem>(await postForm('getUpdateData', opt))
+export async function getHistoryList(): Promise<HistoryItem[]> {
+  const r = await postJSON('getHistoryList');
+  return arr<HistoryItem>(r);
+}
 
-export const saveUpdateRow = async (
+export async function getHistoryDetail(row: number): Promise<HistoryDetail> {
+  const r = await postJSON<HistoryDetail>('getHistoryDetail', { row });
+  return (r as any).entry ?? (r as any);
+}
+
+export async function getAllTopicOptionsPinnedFirst(): Promise<string[]> {
+  const r = await postJSON('getAllTopicOptionsPinnedFirst');
+  if (Array.isArray(r)) return r as string[];
+  return ((r as any)?.items as string[]) || [];
+}
+
+export async function getUpdateData(opt: {
+  q?: string;
+  topicKey?: string;
+  topics?: string[];
+  area?: string;
+  limit?: number;
+  offset?: number;
+  pinnedFirst?: boolean;
+}): Promise<UpdateItem[]> {
+  const r = await postJSON('getUpdateData', opt);
+  return arr<UpdateItem>(r);
+}
+
+export async function saveUpdateRow(
   row: number,
   payload: { answer: string; url: string }
-): Promise<boolean> => {
-  const r = await postForm('saveUpdateRow', { row, payload })
-  return r === true || (r as any)?.ok === true
+): Promise<boolean> {
+  const r = await postJSON('saveUpdateRow', { row, payload });
+  return r === true || (r as any)?.ok === true;
 }
 
-export const syncToMiibo = async (): Promise<boolean> => {
-  const r = await postForm('syncToMiibo')
-  return r === true || (r as any)?.ok === true
+export async function syncToMiibo(): Promise<boolean> {
+  const r = await postJSON('syncToMiibo');
+  return r === true || (r as any)?.ok === true;
 }
 
-export const bulkCompleteDrafts = async (
+export async function bulkCompleteDrafts(
   opt?: { dryRun?: boolean; limit?: number }
-): Promise<BulkDryResult | BulkRunResult> =>
-  (await postForm('bulkCompleteDrafts', opt || {})) as any
+): Promise<BulkDryResult | BulkRunResult> {
+  const r = await postJSON('bulkCompleteDrafts', opt || {});
+  return r as any;
+}
 
-export const predictAnswerForRow = async (row: number): Promise<PredictResult> => {
-  const r = await postForm<PredictResult>('predictAnswerForRow', { row })
-  return (r as any).result ?? (r as any)
+export async function predictAnswerForRow(row: number): Promise<PredictResult> {
+  const r = await postJSON<PredictResult>('predictAnswerForRow', { row });
+  return (r as any).result ?? (r as any);
 }
