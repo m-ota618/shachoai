@@ -9,7 +9,8 @@
     "isolatedModules": true,
     "noEmit": true,
     "strict": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "types": ["node", "@playwright/test"]   // ★ 追加：型を明示
   },
-  "include": ["src"]
+  "include": ["src", "tests", "playwright.config.ts"]  // ★ 追加
 }

@@ -24,6 +24,7 @@ import type {
   UpdateItem,
   PredictResult
 } from './types';
+import { showApiError } from './utils/error';
 
 type Tab = 'unans' | 'drafts' | 'history' | 'update' | 'sync';
 
@@ -60,7 +61,7 @@ export default function App() {
       setUnans(r);
     } catch (e: any) {
       setUnans([]);
-      alert('未回答取得エラー: ' + (e?.message || e));
+      showApiError(e, '未回答取得エラー');
     }
   };
 
@@ -73,7 +74,7 @@ export default function App() {
       setDrafts(r);
     } catch (e: any) {
       setDrafts([]);
-      alert('下書き取得エラー: ' + (e?.message || e));
+      showApiError(e, '下書き取得エラー');
     }
   };
 
@@ -86,7 +87,7 @@ export default function App() {
       setHistory(r);
     } catch (e: any) {
       setHistory([]);
-      alert('履歴取得エラー: ' + (e?.message || e));
+      showApiError(e, '履歴取得エラー');
     }
   };
 
@@ -101,7 +102,7 @@ export default function App() {
       setShowPred(false);
       setTabDetail(true);
     } catch (e: any) {
-      alert('詳細取得エラー: ' + (e?.message || e));
+      showApiError(e, '詳細取得エラー');
     }
   };
 
@@ -114,7 +115,7 @@ export default function App() {
       setHistoryDetail(r);
       setTabHistoryDetail(true);
     } catch (e: any) {
-      alert('履歴詳細エラー: ' + (e?.message || e));
+      showApiError(e, '履歴詳細エラー');
     }
   };
 
@@ -132,6 +133,7 @@ export default function App() {
         const t = await getAllTopicOptionsPinnedFirst();
         setTopicOptions(t);
       } catch (e: any) {
+        // topicOptions は必須ではないので warn だけ
         console.warn(e);
       }
     }
@@ -150,7 +152,7 @@ export default function App() {
       setUpdCur(null);
     } catch (e: any) {
       setUpdList([]);
-      alert('更新データ取得エラー: ' + (e?.message || e));
+      showApiError(e, '更新データ取得エラー');
     }
   };
 
@@ -162,7 +164,9 @@ export default function App() {
       const ok = await syncToMiibo();
       setSyncMsg(ok ? '同期が完了しました。' : '同期に失敗しました。');
     } catch (e: any) {
-      setSyncMsg('同期エラー: ' + (e?.message || e));
+      // ApiError ならトーストに X-Trace-Id が含まれる
+      setSyncMsg('同期エラー。詳細はアラートをご確認ください。');
+      showApiError(e, '同期エラー');
     }
   };
 
@@ -178,8 +182,8 @@ export default function App() {
       }
       setBulkMsg(`対象 ${r.totalTargets} 件（サンプル: ${sampled}）`);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setBulkMsg('エラー: ' + msg);
+      setBulkMsg('エラー。詳細はアラートをご確認ください。');
+      showApiError(e, 'ドライラン失敗');
     }
   };
   const bulkRun = async () => {
@@ -189,7 +193,8 @@ export default function App() {
       const r = await bulkCompleteDrafts({ dryRun: false, limit: 1000 });
       setBulkMsg(`完了：${r.processed}件 / 失敗${r.errors}件（対象${r.totalTargets}件）`);
     } catch (e: any) {
-      setBulkMsg('エラー: ' + (e?.message || e));
+      setBulkMsg('エラー。詳細はアラートをご確認ください。');
+      showApiError(e, '一括転送失敗');
     }
   };
 
@@ -206,7 +211,8 @@ export default function App() {
       const r = await predictAnswerForRow(detail.row);
       setPred(r);
     } catch (e: any) {
-      setPred({ text: 'エラー: ' + (e?.message || e), urls: [] });
+      setPred({ text: 'エラーが発生しました。詳細はアラートをご確認ください。', urls: [] });
+      showApiError(e, 'AI予測エラー');
     } finally {
       if (btnPredictRef.current) btnPredictRef.current.disabled = false;
     }
@@ -667,10 +673,11 @@ export default function App() {
                             alert('保存しました。');
                             await loadUpdateList();
                           } else {
-                            alert('保存に失敗しました。');
+                            // 例外ではないが失敗扱い：traceはないので明示エラー化して統一表示
+                            showApiError(new Error('保存に失敗しました。'), '保存エラー');
                           }
                         } catch (e: any) {
-                          alert('エラー: ' + (e?.message || e));
+                          showApiError(e, '保存エラー');
                         }
                       }}
                     >

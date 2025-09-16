@@ -16,32 +16,109 @@ import type {
 const API_BASE = (import.meta.env.VITE_API_BASE as string) || '/api';
 const GAS_URL = `${API_BASE.replace(/\/$/, '')}/gas`;
 
+/** 相関IDの生成（ブラウザの crypto.randomUUID が無い環境に備えてフォールバック） */
+function newTraceId(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyCrypto = (globalThis as any).crypto;
+    if (anyCrypto?.randomUUID) return anyCrypto.randomUUID();
+  } catch { /* noop */ }
+  return `${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
+}
+
+/** テナントIDの取得（管理者のみ意味あり）。UIが選択した値を localStorage に保存しておく想定 */
+function getTenantIdFromStorage(): string | undefined {
+  try {
+    const v = localStorage.getItem('tenantId');
+    return v && v.trim() ? v.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 構造化APIエラー（UI側で traceId を表示できるようにする） */
+export class ApiError extends Error {
+  code?: string;
+  status?: number;
+  traceId?: string;
+  raw?: string;
+  constructor(message: string, opts?: { code?: string; status?: number; traceId?: string; raw?: string }) {
+    super(message);
+    this.name = 'ApiError';
+    this.code = opts?.code;
+    this.status = opts?.status;
+    this.traceId = opts?.traceId;
+    this.raw = opts?.raw;
+  }
+}
+
 /** /api/gas に JSON POST（必ず Authorization: Bearer を付与） */
-async function postJSON<T = unknown>(action: string, payload?: unknown): Promise<T> {
+async function postJSON<T = unknown>(
+  action: string,
+  payload?: unknown,
+  opt?: { tenantId?: string } // 管理者は明示指定可。未指定なら localStorage の tenantId を使う
+): Promise<T> {
   // Supabase セッションからアクセストークン取得
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
 
+  // 相関ID（クライアント生成）を付与
+  const traceId = newTraceId();
+
+  // テナントID（任意）
+  const tenantId = opt?.tenantId ?? getTenantIdFromStorage();
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Trace-Id': traceId,
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (tenantId) headers['X-Tenant-Id'] = tenantId;
+
   const res = await fetch(GAS_URL, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+    headers,
     body: JSON.stringify({ action, payload }),
   });
 
+  // サーバ側で再発行された相関ID（存在しなければクライアント側のを使う）
+  const respTraceId = res.headers.get('X-Trace-Id') ?? traceId;
+  const contentType = res.headers.get('Content-Type') ?? '';
+
   const text = await res.text();
+
+  // エラー系は構造化して throw。UI で traceId を表示できる。
   if (!res.ok) {
-    // サーバ側のエラーメッセージをそのまま見せる
-    throw new Error(text || `HTTP ${res.status}`);
+    let code: string | undefined;
+    try {
+      if (contentType.includes('application/json')) {
+        const j = JSON.parse(text);
+        code = j?.error ?? undefined;
+      }
+    } catch { /* ignore */ }
+
+    const msg = code
+      ? `APIエラー: ${code}（X-Trace-Id: ${respTraceId}）`
+      : `APIエラー（HTTP ${res.status} / X-Trace-Id: ${respTraceId})`;
+
+    throw new ApiError(msg, {
+      code,
+      status: res.status,
+      traceId: respTraceId,
+      raw: text,
+    });
   }
+
+  // 正常系：JSON or プレーンテキストを返す（GASが文字列/真偽値を返す場合に対応）
   try {
-    return JSON.parse(text) as T;
+    if (contentType.includes('application/json')) {
+      return JSON.parse(text) as T;
+    }
   } catch {
-    // GASが true/false や文字列を返すケースもある
-    return text as unknown as T;
+    // 下で text を返す
   }
+    
+  return (text as unknown) as T;
 }
 
 function arr<T>(r: unknown): T[] {
