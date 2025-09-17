@@ -5,6 +5,7 @@ import { supabase } from "./lib/supabase";
 import Login from "./pages/Login";
 import ResetPassword from "./pages/ResetPassword"; // ★追加
 import App from "./App";
+import Signup from "./pages/Signup";
 
 // 認証ガード
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -50,6 +51,7 @@ export default function Router() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/signup" element={<Signup />} />
       {/* ★メールリンクの着地点（未ログインでも入れる） */}
       <Route path="/reset-password" element={<ResetPassword />} />
       {/* 保護されたアプリ本体 */}
