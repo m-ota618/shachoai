@@ -43,6 +43,113 @@ const badgeStyle = (topic: string) => {
   } as React.CSSProperties;
 };
 
+/** URLエディタ：配列で編集し、親には改行区切りで返す */
+function UrlListEditor(props: {
+  value?: string;
+  onChange: (joined: string) => void;
+  collapsedByDefault?: boolean; // true だと、初期値が空のときは「追加する」ボタンだけ
+  label?: string;
+  help?: string;
+}) {
+  const { value, onChange, collapsedByDefault, label = '参照URL', help = '1行に1URL（表示用）' } = props;
+  const toArray = (v?: string) =>
+    (v || '')
+      .split('\n')
+      .map(s => s.trim())
+      .filter((s, i, a) => s.length > 0 || a.length === 0); // 空配列は避ける
+
+  const [urls, setUrls] = React.useState<string[]>(toArray(value));
+  const [expanded, setExpanded] = React.useState<boolean>(
+    (value && value.trim().length > 0) || !collapsedByDefault ? true : false
+  );
+
+  // 親からの値変更が入った場合に同期（通常はほぼ発火しない）
+  React.useEffect(() => {
+    setUrls(toArray(value));
+    if ((value && value.trim()) || !collapsedByDefault) setExpanded(true);
+  }, [value]);
+
+  const commit = (arr: string[]) => {
+    setUrls(arr);
+    onChange(arr.join('\n'));
+  };
+
+  if (!expanded) {
+    return (
+      <div style={{ marginTop: 8 }}>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => setExpanded(true)}
+          aria-label="参照URLを追加する"
+        >
+          参照URLを追加する
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div className="label">{label}（任意）</div>
+      <div className="help" style={{ margin: '0 0 6px' }}>{help}</div>
+
+      {urls.map((u, i) => (
+        <div key={i} className="row" style={{ gap: 6, marginBottom: 6, alignItems: 'center' }}>
+          <input
+            type="url"
+            inputMode="url"
+            placeholder={`https://example.com/page-${i + 1}`}
+            value={u}
+            onChange={(e) => {
+              const next = [...urls];
+              next[i] = e.target.value;
+              commit(next);
+            }}
+            style={{ flex: '1 1 auto' }}
+            aria-label={`参照URL ${i + 1}`}
+          />
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => {
+              const next = urls.slice(0, i).concat(urls.slice(i + 1));
+              commit(next.length ? next : ['']); // 最低1行は保持
+            }}
+            aria-label={`参照URL ${i + 1} を削除`}
+          >
+            削除
+          </button>
+        </div>
+      ))}
+
+      <div className="row" style={{ gap: 8, marginTop: 6 }}>
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={() => commit([...urls, ''])}
+          aria-label="参照URLを1行追加"
+        >
+          ＋ URLを追加
+        </button>
+        {urls.every(s => !s.trim()) && (
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => {
+              commit([]);
+              setExpanded(false); // 空のときは閉じる
+            }}
+            aria-label="参照URL入力を閉じる"
+          >
+            入力を閉じる
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState<Tab>('unans');
 
@@ -452,14 +559,14 @@ export default function App() {
                   placeholder="短文で明確に入力してください。"
                 />
 
-                <div className="label">URL（任意）：1行に1URL、利用者へ表示されるURLです。</div>
-                <textarea
-                  id="detailURL"
-                  style={{ minHeight: 56, height: 56 }}
+                <UrlListEditor
                   value={detail.url || ''}
-                  onChange={(e) => setDetail({ ...detail, url: e.target.value })}
-                  placeholder={'https://example.com/one\nhttps://example.com/two'}
+                  onChange={(joined) => setDetail({ ...detail, url: joined })}
+                  collapsedByDefault
+                  label="参照URL"
+                  help="1行に1URL（利用者に表示）"
                 />
+
 
                 <div className="row" style={{ marginTop: 8 }}>
                   <button className="btn btn-future" id="btnPredict" ref={btnPredictRef} onClick={runPredict}>
@@ -658,14 +765,14 @@ export default function App() {
                     onChange={(e) => setUpdCur({ ...updCur, answer: e.target.value })}
                   />
 
-                  <div className="label">URL（任意）：1行に1URL、利用者へ表示されるURLです。</div>
-                  <textarea
-                    id="updURL"
-                    placeholder={'https://example.com/one\nhttps://example.com/two'}
-                    style={{ minHeight: 56, resize: 'vertical', whiteSpace: 'pre-wrap' }}
+                  <UrlListEditor
                     value={updCur.url || ''}
-                    onChange={(e) => setUpdCur({ ...updCur, url: e.target.value })}
+                    onChange={(joined) => setUpdCur({ ...updCur, url: joined })}
+                    collapsedByDefault
+                    label="参照URL"
+                    help="1行に1URL（利用者に表示）"
                   />
+
 
                   <div style={{ marginTop: 10 }}>
                     <button
