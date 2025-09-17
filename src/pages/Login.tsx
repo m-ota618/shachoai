@@ -1,6 +1,6 @@
 // src/pages/Login.tsx
 import { useEffect, useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation, Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
 export default function Login() {
@@ -13,26 +13,40 @@ export default function Login() {
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // ルーターガード（RequireAuth）からの理由付リダイレクトを拾う
+  const reason = (loc.state as any)?.reason as string | undefined;
+  useEffect(() => {
+    if (reason === "forbidden_domain") {
+      setMsg("許可されていないメールドメインです。会社のメールアドレスでログインしてください。");
+    }
+  }, [reason]);
+
+  // 既ログイン → /app
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) nav("/app", { replace: true });
     });
   }, [nav]);
-  // コールバックの種別ごとに遷移
+
+  // コールバック種別に応じて遷移（URLハッシュ #access_token などをSupabaseが取り込む前提）
   useEffect(() => {
     const hash = window.location.hash || "";
     const q = new URLSearchParams(hash.replace(/^#/, ""));
     const type = q.get("type");
+
+    // パスワード再設定リンク
     if (type === "recovery") {
       nav("/reset-password", { replace: true });
       return;
     }
-    // signup / magiclink / email_change は /app へ
-    if (type === "signup" || type === "magiclink" || type === "email_change" || type === "invite") {
+    // サインアップ/マジックリンク/招待/メール変更はサインイン想定 → /app
+    if (type === "signup" || type === "magiclink" || type === "invite" || type === "email_change") {
       nav("/app", { replace: true });
       return;
     }
-    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+
+    // ランタイムの状態変化も拾う
+    const { data: sub } = supabase.auth.onAuthStateChange((event, _session) => {
       if (event === "PASSWORD_RECOVERY") nav("/reset-password", { replace: true });
       if (event === "SIGNED_IN") nav("/app", { replace: true });
     });
@@ -46,11 +60,10 @@ export default function Login() {
     try {
       const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
       if (error) { setMsg(`ログイン失敗：${error.message}`); return; }
-      const from = (loc.state as { from?: { pathname?: string } } | null)?.from?.pathname || "/app";
+      const from = (loc.state as any)?.from?.pathname || "/app";
       nav(from, { replace: true });
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      setMsg(`ログイン失敗：${message ?? "不明なエラー"}`);
+    } catch (e: any) {
+      setMsg(`ログイン失敗：${e?.message ?? "不明なエラー"}`);
     } finally {
       setBusy(false);
     }
@@ -66,9 +79,8 @@ export default function Login() {
       });
       if (error) { setMsg(`再設定メールの送信に失敗：${error.message}`); return; }
       setMsg("再設定メールを送信しました。");
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      setMsg(`送信失敗：${message ?? "不明なエラー"}`);
+    } catch (e: any) {
+      setMsg(`送信失敗：${e?.message ?? "不明なエラー"}`);
     } finally {
       setBusy(false);
     }
@@ -76,11 +88,13 @@ export default function Login() {
 
   return (
     <>
+      {/* アプリ共通ヘッダ */}
       <header className="app-header" role="banner">
         <img src="/planter-lockup.svg" alt="Planter" className="brand-lockup" />
         <div className="app-header-divider" />
       </header>
 
+      {/* 中央カード */}
       <main className="auth-center">
         <form className="auth-card" onSubmit={login} aria-labelledby="loginTitle">
           <h2 id="loginTitle" className="auth-card-title">ログイン</h2>
@@ -167,9 +181,7 @@ export default function Login() {
 
           <div style={{ marginTop: 8, textAlign: 'center', fontSize: 13 }}>
             アカウントをお持ちでない方は{" "}
-            <a href="/signup" onClick={(e)=>{ e.preventDefault(); nav('/signup'); }}>
-              新規登録
-            </a>
+            <Link to="/signup" className="auth-link">新規登録</Link>
           </div>
         </form>
       </main>
