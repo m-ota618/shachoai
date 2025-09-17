@@ -5,8 +5,6 @@ import { supabase } from "../lib/supabase";
 export default function Signup() {
   const nav = useNavigate();
   const [email, setEmail] = useState("");
-  const [pw, setPw] = useState("");
-  const [showPw, setShowPw] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -24,23 +22,20 @@ export default function Signup() {
     setOkMsg(null);
     setBusy(true);
     try {
-      const { error } = await supabase.auth.signUp({
+      // パスワード不要のメールマジックリンク
+      const { error } = await supabase.auth.signInWithOtp({
         email,
-        password: pw,
         options: {
-          emailRedirectTo: `${window.location.origin}/reset-password`,
+          emailRedirectTo: `${window.location.origin}/app`, // クリック後は /app へ
         },
       });
       if (error) {
-        // ドメインHookでは "This email domain is not allowed." が返る想定
-        setMsg(`登録に失敗：${error.message}`);
+        setMsg(`送信に失敗：${error.message}`);
         return;
       }
-      setOkMsg(
-        "確認メールを送信しました。メール内のリンクから認証を完了してください。"
-      );
+      setOkMsg("ログイン用のリンクを送信しました。メールをご確認ください。");
     } catch (e: any) {
-      setMsg(`登録に失敗：${e?.message ?? "不明なエラー"}`);
+      setMsg(`送信に失敗：${e?.message ?? "不明なエラー"}`);
     } finally {
       setBusy(false);
     }
@@ -55,7 +50,7 @@ export default function Signup() {
 
       <main className="auth-center">
         <form className="auth-card" onSubmit={onSubmit} aria-labelledby="signupTitle">
-          <h2 id="signupTitle" className="auth-card-title">新規登録</h2>
+          <h2 id="signupTitle" className="auth-card-title">新規登録 / 招待なしログイン</h2>
 
           <label className="label" htmlFor="email">メールアドレス</label>
           <div className="input-group">
@@ -77,51 +72,11 @@ export default function Signup() {
             />
           </div>
 
-          <label className="label" htmlFor="pw" style={{ marginTop: 10 }}>パスワード</label>
-          <div className="input-group">
-            <span className="input-icon" aria-hidden>
-              <svg width="18" height="18" viewBox="0 0 24 24">
-                <rect x="5" y="10" width="14" height="9" rx="2" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-                <path d="M8 10V8a4 4 0 0 1 8 0v2" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-              </svg>
-            </span>
-            <input
-              id="pw"
-              type={showPw ? "text" : "password"}
-              placeholder="8文字以上"
-              value={pw}
-              onChange={(e) => setPw(e.target.value)}
-              disabled={busy}
-              className="input"
-              required
-              minLength={8}
-            />
-            <button
-              type="button"
-              className="input-affix-btn"
-              aria-label={showPw ? "パスワードを隠す" : "パスワードを表示"}
-              onClick={() => setShowPw(v => !v)}
-              disabled={busy}
-            >
-              {showPw ? (
-                <svg width="18" height="18" viewBox="0 0 24 24">
-                  <path d="M3 3l18 18" stroke="currentColor" strokeWidth="1.8"/>
-                  <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7c-2.6 0-4.9-1.2-6.7-2.9" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-                </svg>
-              ) : (
-                <svg width="18" height="18" viewBox="0 0 24 24">
-                  <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-                  <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.6" />
-                </svg>
-              )}
-            </button>
-          </div>
-
           {okMsg && <div className="auth-alert ok" role="status">{okMsg}</div>}
           {msg && <div className="auth-alert err" role="alert">{msg}</div>}
 
           <button type="submit" className="btn btn-primary auth-submit" disabled={busy}>
-            {busy ? <span className="spinner" aria-hidden /> : <span>登録する</span>}
+            {busy ? <span className="spinner" aria-hidden /> : <span>ログインリンクを送る</span>}
           </button>
 
           <button

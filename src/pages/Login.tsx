@@ -18,17 +18,23 @@ export default function Login() {
       if (data.session) nav("/app", { replace: true });
     });
   }, [nav]);
-
+  // コールバックの種別ごとに遷移
   useEffect(() => {
     const hash = window.location.hash || "";
     const q = new URLSearchParams(hash.replace(/^#/, ""));
     const type = q.get("type");
-    if (type === "recovery" || type === "invite" || type === "signup") {
+    if (type === "recovery") {
       nav("/reset-password", { replace: true });
+      return;
+    }
+    // signup / magiclink / email_change は /app へ
+    if (type === "signup" || type === "magiclink" || type === "email_change" || type === "invite") {
+      nav("/app", { replace: true });
       return;
     }
     const { data: sub } = supabase.auth.onAuthStateChange((event) => {
       if (event === "PASSWORD_RECOVERY") nav("/reset-password", { replace: true });
+      if (event === "SIGNED_IN") nav("/app", { replace: true });
     });
     return () => sub.subscription.unsubscribe();
   }, [nav]);
