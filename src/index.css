@@ -322,3 +322,21 @@ html, body { overscroll-behavior: none; }
 
 /* 追加：.content 内でスクロールを完結させる */
 .content { overscroll-behavior: contain; }
+
+/* PCだけ外側のスクロールを禁止して “帯” を消す */
+@media (min-width: 961px) {
+  html, body {
+    height: 100%;
+    overflow: hidden; /* ← これが肝 */
+  }
+  #root {
+    height: 100dvh;   /* ビューポート高にフィット */
+  }
+}
+
+/* PC幅ではサイドバーの✕を隠す（モバイルだけ表示） */
+@media (min-width: 961px) {
+  .sidebar .icon-btn.close {
+    display: none;
+  }
+}

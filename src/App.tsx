@@ -339,7 +339,7 @@ export default function App() {
           </nav>
 
           <div className="sidebar-footer">
-            {/* 著作権表記は非表示に（ご要望どおり） */}
+            <small>© Planter</small>
           </div>
         </aside>
 
