@@ -1,68 +1,46 @@
-// src/pages/Login.tsx
 import { useEffect, useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
-export default function Login() {
+export default function Signup() {
   const nav = useNavigate();
-  const loc = useLocation();
-
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // 既ログインなら /app へ
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) nav("/app", { replace: true });
     });
   }, [nav]);
 
-  useEffect(() => {
-    const hash = window.location.hash || "";
-    const q = new URLSearchParams(hash.replace(/^#/, ""));
-    const type = q.get("type");
-    if (type === "recovery" || type === "invite" || type === "signup") {
-      nav("/reset-password", { replace: true });
-      return;
-    }
-    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "PASSWORD_RECOVERY") nav("/reset-password", { replace: true });
-    });
-    return () => sub.subscription.unsubscribe();
-  }, [nav]);
-
-  const login = async (e: React.FormEvent) => {
+  const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setMsg(null);
+    setOkMsg(null);
     setBusy(true);
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
-      if (error) { setMsg(`ログイン失敗：${error.message}`); return; }
-      const from = (loc.state as { from?: { pathname?: string } } | null)?.from?.pathname || "/app";
-      nav(from, { replace: true });
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      setMsg(`ログイン失敗：${message ?? "不明なエラー"}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const sendReset = async () => {
-    setMsg(null);
-    if (!email) { setMsg("メールアドレスを入力してください"); return; }
-    setBusy(true);
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password`,
+      const { error } = await supabase.auth.signUp({
+        email,
+        password: pw,
+        options: {
+          emailRedirectTo: `${window.location.origin}/reset-password`,
+        },
       });
-      if (error) { setMsg(`再設定メールの送信に失敗：${error.message}`); return; }
-      setMsg("再設定メールを送信しました。");
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      setMsg(`送信失敗：${message ?? "不明なエラー"}`);
+      if (error) {
+        // ドメインHookでは "This email domain is not allowed." が返る想定
+        setMsg(`登録に失敗：${error.message}`);
+        return;
+      }
+      setOkMsg(
+        "確認メールを送信しました。メール内のリンクから認証を完了してください。"
+      );
+    } catch (e: any) {
+      setMsg(`登録に失敗：${e?.message ?? "不明なエラー"}`);
     } finally {
       setBusy(false);
     }
@@ -76,8 +54,8 @@ export default function Login() {
       </header>
 
       <main className="auth-center">
-        <form className="auth-card" onSubmit={login} aria-labelledby="loginTitle">
-          <h2 id="loginTitle" className="auth-card-title">ログイン</h2>
+        <form className="auth-card" onSubmit={onSubmit} aria-labelledby="signupTitle">
+          <h2 id="signupTitle" className="auth-card-title">新規登録</h2>
 
           <label className="label" htmlFor="email">メールアドレス</label>
           <div className="input-group">
@@ -90,7 +68,7 @@ export default function Login() {
             <input
               id="email"
               type="email"
-              placeholder="you@example.com"
+              placeholder="you@okuratokyo.jp"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               disabled={busy}
@@ -122,7 +100,7 @@ export default function Login() {
               type="button"
               className="input-affix-btn"
               aria-label={showPw ? "パスワードを隠す" : "パスワードを表示"}
-              onClick={() => setShowPw((v) => !v)}
+              onClick={() => setShowPw(v => !v)}
               disabled={busy}
             >
               {showPw ? (
@@ -139,32 +117,21 @@ export default function Login() {
             </button>
           </div>
 
-          {msg && (
-            <div role="alert" aria-live="polite" className="auth-alert err">
-              {msg}
-            </div>
-          )}
+          {okMsg && <div className="auth-alert ok" role="status">{okMsg}</div>}
+          {msg && <div className="auth-alert err" role="alert">{msg}</div>}
 
           <button type="submit" className="btn btn-primary auth-submit" disabled={busy}>
-            {busy ? <span className="spinner" aria-hidden /> : <span>ログイン</span>}
+            {busy ? <span className="spinner" aria-hidden /> : <span>登録する</span>}
           </button>
 
           <button
             type="button"
             className="btn btn-secondary auth-alt"
-            onClick={sendReset}
+            onClick={() => nav("/login")}
             disabled={busy}
-            title="入力したメールアドレス宛に再設定用リンクを送信します"
           >
-            パスワードをお忘れの方
+            ログインへ戻る
           </button>
-
-          <div style={{ marginTop: 8, textAlign: 'center', fontSize: 13 }}>
-            アカウントをお持ちでない方は{" "}
-            <a href="/signup" onClick={(e)=>{ e.preventDefault(); nav('/signup'); }}>
-              新規登録
-            </a>
-          </div>
         </form>
       </main>
     </>
