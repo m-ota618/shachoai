@@ -394,3 +394,69 @@ html, body { overscroll-behavior: none; }
 @media (min-width: 961px) {
   .sidebar .icon-btn.close { display: none; }
 }
+
+
+/* ===== レイアウト調整（隙間除去＆一貫オフセット） ===== */
+:root{
+  --header-h: 56px;   /* ヘッダの実高さに合わせて */
+  --sidebar-w: 240px; /* サイドバー幅 */
+  --topbar-h: 48px;   /* モバイルの上部バー */
+}
+
+html, body, #root { height: 100%; }
+body { margin: 0; }
+
+/* ヘッダ固定 */
+.app-header{
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: var(--header-h);
+  z-index: 1000;
+  background: #fff;
+}
+
+/* レイアウトの基礎高さ */
+.layout{ min-height: 100vh; }
+
+/* サイドバー固定（大画面） */
+.sidebar{
+  position: fixed;
+  top: var(--header-h);
+  left: 0;
+  bottom: 0;
+  width: var(--sidebar-w);
+  overflow: auto;
+}
+
+/* コンテンツはヘッダとサイドバーを避ける */
+.content{
+  margin-left: var(--sidebar-w);
+  padding: 16px;
+  padding-top: calc(var(--header-h) + 16px);
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+
+/* 最初の見出しの“余白ダブり”回避 */
+.content .wrap:first-child{ margin-top: 0; }
+.page-title{ margin-top: 0; }
+
+/* モバイル時：トップバーぶんを追加オフセット、サイドバーはオーバーレイ表示前提 */
+@media (max-width: 960px){
+  .topbar{
+    position: fixed;
+    top: var(--header-h);
+    left: 0; right: 0;
+    height: var(--topbar-h);
+    z-index: 999;
+    /* displayは既存CSSに準拠（必要なら display:flex;） */
+  }
+  .sidebar{
+    top: calc(var(--header-h) + var(--topbar-h));
+    width: min(80vw, 320px);
+  }
+  .content{
+    margin-left: 0;
+    padding-top: calc(var(--header-h) + var(--topbar-h) + 16px);
+  }
+}
