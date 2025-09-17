@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
+import { isAllowedEmail, FRONT_ALLOWED } from "../utils/domain";
 
 export default function Signup() {
   const nav = useNavigate();
@@ -9,7 +10,6 @@ export default function Signup() {
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // 既ログインなら /app へ
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) nav("/app", { replace: true });
@@ -20,19 +20,23 @@ export default function Signup() {
     e.preventDefault();
     setMsg(null);
     setOkMsg(null);
+
+    if (!isAllowedEmail(email)) {
+      setMsg(
+        `許可されていないメールドメインです。${
+          FRONT_ALLOWED.length ? `（許可: ${FRONT_ALLOWED.join(", ")}）` : ""
+        }`
+      );
+      return; // ← ここで送信しない
+    }
+
     setBusy(true);
     try {
-      // パスワード不要のメールマジックリンク
       const { error } = await supabase.auth.signInWithOtp({
         email,
-        options: {
-          emailRedirectTo: `${window.location.origin}/app`, // クリック後は /app へ
-        },
+        options: { emailRedirectTo: `${window.location.origin}/app` },
       });
-      if (error) {
-        setMsg(`送信に失敗：${error.message}`);
-        return;
-      }
+      if (error) { setMsg(`送信に失敗：${error.message}`); return; }
       setOkMsg("ログイン用のリンクを送信しました。メールをご確認ください。");
     } catch (e: any) {
       setMsg(`送信に失敗：${e?.message ?? "不明なエラー"}`);
@@ -63,7 +67,7 @@ export default function Signup() {
             <input
               id="email"
               type="email"
-              placeholder="you@okuratokyo.jp"
+              placeholder="you@company.co.jp"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               disabled={busy}

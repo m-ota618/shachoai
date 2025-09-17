@@ -1,6 +1,7 @@
 // src/pages/Login.tsx
 import { useEffect, useState } from "react";
 import { useNavigate, useLocation, Link } from "react-router-dom";
+import { isAllowedEmail, FRONT_ALLOWED } from "../utils/domain";
 import { supabase } from "../lib/supabase";
 
 export default function Login() {
@@ -72,6 +73,14 @@ export default function Login() {
   const sendReset = async () => {
     setMsg(null);
     if (!email) { setMsg("メールアドレスを入力してください"); return; }
+    if (!isAllowedEmail(email)) {
+      setMsg(
+        `許可されていないメールドメインです。${
+          FRONT_ALLOWED.length ? `（許可: ${FRONT_ALLOWED.join(", ")}）` : ""
+        }`
+      );
+      return; // ← ここで送信しない
+    }
     setBusy(true);
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
