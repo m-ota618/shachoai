@@ -1,3 +1,4 @@
+// src/App.tsx
 import React, { useEffect, useRef, useState } from 'react';
 import {
   getUnanswered,
@@ -59,9 +60,9 @@ export default function App() {
     try {
       const r = await getUnanswered();
       setUnans(r);
-    } catch (e: any) {
+    } catch (err: unknown) {
       setUnans([]);
-      showApiError(e, '未回答取得エラー');
+      showApiError(err, '未回答取得エラー');
     }
   };
 
@@ -72,9 +73,9 @@ export default function App() {
     try {
       const r = await getDrafts();
       setDrafts(r);
-    } catch (e: any) {
+    } catch (err: unknown) {
       setDrafts([]);
-      showApiError(e, '下書き取得エラー');
+      showApiError(err, '下書き取得エラー');
     }
   };
 
@@ -85,9 +86,9 @@ export default function App() {
     try {
       const r = await getHistoryList();
       setHistory(r);
-    } catch (e: any) {
+    } catch (err: unknown) {
       setHistory([]);
-      showApiError(e, '履歴取得エラー');
+      showApiError(err, '履歴取得エラー');
     }
   };
 
@@ -101,8 +102,8 @@ export default function App() {
       setPred(null);
       setShowPred(false);
       setTabDetail(true);
-    } catch (e: any) {
-      showApiError(e, '詳細取得エラー');
+    } catch (err: unknown) {
+      showApiError(err, '詳細取得エラー');
     }
   };
 
@@ -114,8 +115,8 @@ export default function App() {
       const r = await getHistoryDetail(row);
       setHistoryDetail(r);
       setTabHistoryDetail(true);
-    } catch (e: any) {
-      showApiError(e, '履歴詳細エラー');
+    } catch (err: unknown) {
+      showApiError(err, '履歴詳細エラー');
     }
   };
 
@@ -132,9 +133,9 @@ export default function App() {
       try {
         const t = await getAllTopicOptionsPinnedFirst();
         setTopicOptions(t);
-      } catch (e: any) {
+      } catch (err: unknown) {
         // topicOptions は必須ではないので warn だけ
-        console.warn(e);
+        console.warn(err);
       }
     }
     await loadUpdateList();
@@ -150,9 +151,9 @@ export default function App() {
       });
       setUpdList(data);
       setUpdCur(null);
-    } catch (e: any) {
+    } catch (err: unknown) {
       setUpdList([]);
-      showApiError(e, '更新データ取得エラー');
+      showApiError(err, '更新データ取得エラー');
     }
   };
 
@@ -163,10 +164,9 @@ export default function App() {
     try {
       const ok = await syncToMiibo();
       setSyncMsg(ok ? '同期が完了しました。' : '同期に失敗しました。');
-    } catch (e: any) {
-      // ApiError ならトーストに X-Trace-Id が含まれる
+    } catch (err: unknown) {
       setSyncMsg('同期エラー。詳細はアラートをご確認ください。');
-      showApiError(e, '同期エラー');
+      showApiError(err, '同期エラー');
     }
   };
 
@@ -181,9 +181,9 @@ export default function App() {
         sampled = r.sampled.map(({ row, q }) => `#${row}: ${q}`).join(' / ');
       }
       setBulkMsg(`対象 ${r.totalTargets} 件（サンプル: ${sampled}）`);
-    } catch (e: unknown) {
+    } catch (err: unknown) {
       setBulkMsg('エラー。詳細はアラートをご確認ください。');
-      showApiError(e, 'ドライラン失敗');
+      showApiError(err, 'ドライラン失敗');
     }
   };
   const bulkRun = async () => {
@@ -192,9 +192,9 @@ export default function App() {
     try {
       const r = await bulkCompleteDrafts({ dryRun: false, limit: 1000 });
       setBulkMsg(`完了：${r.processed}件 / 失敗${r.errors}件（対象${r.totalTargets}件）`);
-    } catch (e: any) {
+    } catch (err: unknown) {
       setBulkMsg('エラー。詳細はアラートをご確認ください。');
-      showApiError(e, '一括転送失敗');
+      showApiError(err, '一括転送失敗');
     }
   };
 
@@ -210,9 +210,9 @@ export default function App() {
     try {
       const r = await predictAnswerForRow(detail.row);
       setPred(r);
-    } catch (e: any) {
+    } catch (err: unknown) {
       setPred({ text: 'エラーが発生しました。詳細はアラートをご確認ください。', urls: [] });
-      showApiError(e, 'AI予測エラー');
+      showApiError(err, 'AI予測エラー');
     } finally {
       if (btnPredictRef.current) btnPredictRef.current.disabled = false;
     }
@@ -251,7 +251,7 @@ export default function App() {
       setSyncMsg('');
       setBulkMsg('');
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
   // === Icons (inline SVG) ===
@@ -339,7 +339,7 @@ export default function App() {
           </nav>
 
           <div className="sidebar-footer">
-            <small>© OkuraTokyo</small>
+            {/* 著作権表記は非表示に（ご要望どおり） */}
           </div>
         </aside>
 
@@ -411,7 +411,7 @@ export default function App() {
               ) : history.length === 0 ? (
                 <div className="empty">履歴はありません</div>
               ) : (
-                <div className="cards">{/* ← ここがポイント：他タブと完全同一の .cards */}
+                <div className="cards">
                   {history.map((it) => (
                     <div key={it.row} className="card" onClick={() => openHistoryDetail(it.row)}>
                       <div className="q">{it.question}</div>
@@ -616,10 +616,11 @@ export default function App() {
                           <div className="meta">
                             <span className="k">Topic</span>
                             <span className="badge" style={badgeStyle(topic)}>{topic}</span>
-                            　
+                            {' '}
                             <span className="k">Area</span>
                             <span className="badge">{area}</span>
-                            　{it.syncedAt ? <span className="badge badge-light">最終同期 {it.syncedAt}</span> : null}
+                            {' '}
+                            {it.syncedAt ? <span className="badge badge-light">最終同期 {it.syncedAt}</span> : null}
                           </div>
                           <div className="meta">回答：{ansClip}</div>
                         </div>
@@ -676,8 +677,8 @@ export default function App() {
                             // 例外ではないが失敗扱い：traceはないので明示エラー化して統一表示
                             showApiError(new Error('保存に失敗しました。'), '保存エラー');
                           }
-                        } catch (e: any) {
-                          showApiError(e, '保存エラー');
+                        } catch (err: unknown) {
+                          showApiError(err, '保存エラー');
                         }
                       }}
                     >

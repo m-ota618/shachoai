@@ -1,8 +1,9 @@
-/// <reference types="@playwright/test" />
+// tests/api.smoke.spec.ts
 import { test, expect } from '@playwright/test';
 
 const APP_URL = process.env.APP_URL;
 if (!APP_URL) throw new Error('APP_URL is not set');
+
 const HAS_TOKEN = !!process.env.SUPABASE_TEST_ACCESS_TOKEN;
 
 test.describe('API (auth success path)', () => {
@@ -20,13 +21,14 @@ test.describe('API (auth success path)', () => {
 
     expect([200, 204]).toContain(r.status());
 
-    const headers = r.headersArray(); // [{name,value}]（nameは小文字）
+    const headers = r.headersArray(); // [{ name, value }] （name は小文字で返る）
     const pick = (n: string) => headers.find(h => h.name === n.toLowerCase())?.value;
 
     const trace = pick('x-trace-id');
-    expect(typeof trace).toBe('string');     // ★ 必須に
-    expect((pick('access-control-expose-headers') || '').toLowerCase())
-      .toContain('x-trace-id');               // CORS露出も合わせて担保
+    expect(typeof trace).toBe('string'); // ヘッダ必須
+
+    const expose = (pick('access-control-expose-headers') || '').toLowerCase();
+    expect(expose.includes('x-trace-id')).toBe(true); // CORSで露出されていること
 
     if (r.status() === 200) {
       const ct = (pick('content-type') || '').toLowerCase();

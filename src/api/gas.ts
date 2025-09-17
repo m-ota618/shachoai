@@ -19,10 +19,9 @@ const GAS_URL = `${API_BASE.replace(/\/$/, '')}/gas`;
 /** 相関IDの生成（ブラウザの crypto.randomUUID が無い環境に備えてフォールバック） */
 function newTraceId(): string {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const anyCrypto = (globalThis as any).crypto;
-    if (anyCrypto?.randomUUID) return anyCrypto.randomUUID();
-  } catch { /* noop */ }
+    const anyCrypto = (globalThis as { crypto?: { randomUUID?: () => string } });
+    if (anyCrypto.crypto?.randomUUID) return anyCrypto.crypto.randomUUID();
+  } catch {/* noop */}
   return `${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
 }
 
@@ -52,20 +51,15 @@ export class ApiError extends Error {
   }
 }
 
-/** /api/gas に JSON POST（必ず Authorization: Bearer を付与） */
 async function postJSON<T = unknown>(
   action: string,
   payload?: unknown,
-  opt?: { tenantId?: string } // 管理者は明示指定可。未指定なら localStorage の tenantId を使う
+  opt?: { tenantId?: string }
 ): Promise<T> {
-  // Supabase セッションからアクセストークン取得
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
 
-  // 相関ID（クライアント生成）を付与
   const traceId = newTraceId();
-
-  // テナントID（任意）
   const tenantId = opt?.tenantId ?? getTenantIdFromStorage();
 
   const headers: Record<string, string> = {
@@ -81,21 +75,18 @@ async function postJSON<T = unknown>(
     body: JSON.stringify({ action, payload }),
   });
 
-  // サーバ側で再発行された相関ID（存在しなければクライアント側のを使う）
   const respTraceId = res.headers.get('X-Trace-Id') ?? traceId;
   const contentType = res.headers.get('Content-Type') ?? '';
-
   const text = await res.text();
 
-  // エラー系は構造化して throw。UI で traceId を表示できる。
   if (!res.ok) {
     let code: string | undefined;
     try {
-      if (contentType.includes('application/json')) {
-        const j = JSON.parse(text);
+      if (contentType.toLowerCase().includes('application/json')) {
+        const j = JSON.parse(text) as { error?: string; traceId?: string };
         code = j?.error ?? undefined;
       }
-    } catch { /* ignore */ }
+    } catch {/* ignore */}
 
     const msg = code
       ? `APIエラー: ${code}（X-Trace-Id: ${respTraceId}）`
@@ -109,22 +100,18 @@ async function postJSON<T = unknown>(
     });
   }
 
-  // 正常系：JSON or プレーンテキストを返す（GASが文字列/真偽値を返す場合に対応）
   try {
-    if (contentType.includes('application/json')) {
+    if (contentType.toLowerCase().includes('application/json')) {
       return JSON.parse(text) as T;
     }
-  } catch {
-    // 下で text を返す
-  }
-    
+  } catch {/* noop */}
   return (text as unknown) as T;
 }
 
 function arr<T>(r: unknown): T[] {
   if (Array.isArray(r)) return r as T[];
-  if (r && typeof r === 'object' && Array.isArray((r as any).items)) {
-    return (r as any).items as T[];
+  if (r && typeof r === 'object' && Array.isArray((r as { items?: T[] }).items)) {
+    return (r as { items: T[] }).items;
   }
   return [];
 }
@@ -143,22 +130,22 @@ export async function getDrafts(): Promise<DraftItem[]> {
 
 export async function getDetail(row: number): Promise<Detail> {
   const r = await postJSON<Detail>('getDetail', { row });
-  return (r as any).entry ?? (r as any);
+  return (r as { entry?: Detail }).entry ?? (r as Detail);
 }
 
 export async function saveAnswer(row: number, answer: string, url: string): Promise<boolean> {
   const r = await postJSON('saveAnswer', { row, answer, url });
-  return r === true || (r as any)?.ok === true;
+  return r === true || (r as { ok?: boolean })?.ok === true;
 }
 
 export async function completeFromWeb(row: number): Promise<boolean> {
   const r = await postJSON('completeFromWeb', { row });
-  return r === true || (r as any)?.ok === true;
+  return r === true || (r as { ok?: boolean })?.ok === true;
 }
 
 export async function noChangeFromWeb(row: number): Promise<boolean> {
   const r = await postJSON('noChangeFromWeb', { row });
-  return r === true || (r as any)?.ok === true;
+  return r === true || (r as { ok?: boolean })?.ok === true;
 }
 
 export async function getHistoryList(): Promise<HistoryItem[]> {
@@ -168,13 +155,13 @@ export async function getHistoryList(): Promise<HistoryItem[]> {
 
 export async function getHistoryDetail(row: number): Promise<HistoryDetail> {
   const r = await postJSON<HistoryDetail>('getHistoryDetail', { row });
-  return (r as any).entry ?? (r as any);
+  return (r as { entry?: HistoryDetail }).entry ?? (r as HistoryDetail);
 }
 
 export async function getAllTopicOptionsPinnedFirst(): Promise<string[]> {
   const r = await postJSON('getAllTopicOptionsPinnedFirst');
   if (Array.isArray(r)) return r as string[];
-  return ((r as any)?.items as string[]) || [];
+  return ((r as { items?: string[] })?.items) || [];
 }
 
 export async function getUpdateData(opt: {
@@ -195,22 +182,22 @@ export async function saveUpdateRow(
   payload: { answer: string; url: string }
 ): Promise<boolean> {
   const r = await postJSON('saveUpdateRow', { row, payload });
-  return r === true || (r as any)?.ok === true;
+  return r === true || (r as { ok?: boolean })?.ok === true;
 }
 
 export async function syncToMiibo(): Promise<boolean> {
   const r = await postJSON('syncToMiibo');
-  return r === true || (r as any)?.ok === true;
+  return r === true || (r as { ok?: boolean })?.ok === true;
 }
 
 export async function bulkCompleteDrafts(
   opt?: { dryRun?: boolean; limit?: number }
 ): Promise<BulkDryResult | BulkRunResult> {
   const r = await postJSON('bulkCompleteDrafts', opt || {});
-  return r as any;
+  return r as BulkDryResult | BulkRunResult;
 }
 
 export async function predictAnswerForRow(row: number): Promise<PredictResult> {
   const r = await postJSON<PredictResult>('predictAnswerForRow', { row });
-  return (r as any).result ?? (r as any);
+  return (r as { result?: PredictResult }).result ?? (r as PredictResult);
 }

@@ -13,14 +13,12 @@ export default function Login() {
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // 既ログインなら /app
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) nav("/app", { replace: true });
     });
   }, [nav]);
 
-  // リカバリ/招待リンクは /reset-password へ
   useEffect(() => {
     const hash = window.location.hash || "";
     const q = new URLSearchParams(hash.replace(/^#/, ""));
@@ -42,10 +40,11 @@ export default function Login() {
     try {
       const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
       if (error) { setMsg(`ログイン失敗：${error.message}`); return; }
-      const from = (loc.state as any)?.from?.pathname || "/app";
+      const from = (loc.state as { from?: { pathname?: string } } | null)?.from?.pathname || "/app";
       nav(from, { replace: true });
-    } catch (e: any) {
-      setMsg(`ログイン失敗：${e?.message ?? "不明なエラー"}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setMsg(`ログイン失敗：${message ?? "不明なエラー"}`);
     } finally {
       setBusy(false);
     }
@@ -61,8 +60,9 @@ export default function Login() {
       });
       if (error) { setMsg(`再設定メールの送信に失敗：${error.message}`); return; }
       setMsg("再設定メールを送信しました。");
-    } catch (e: any) {
-      setMsg(`送信失敗：${e?.message ?? "不明なエラー"}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setMsg(`送信失敗：${message ?? "不明なエラー"}`);
     } finally {
       setBusy(false);
     }
@@ -70,13 +70,11 @@ export default function Login() {
 
   return (
     <>
-      {/* アプリと同じヘッダ（左上ロゴだけ） */}
       <header className="app-header" role="banner">
         <img src="/planter-lockup.svg" alt="Planter" className="brand-lockup" />
         <div className="app-header-divider" />
       </header>
 
-      {/* 中央にログインカードだけ */}
       <main className="auth-center">
         <form className="auth-card" onSubmit={login} aria-labelledby="loginTitle">
           <h2 id="loginTitle" className="auth-card-title">ログイン</h2>

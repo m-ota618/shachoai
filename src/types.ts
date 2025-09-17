@@ -1,11 +1,9 @@
 // src/types.ts
-
 export type UnansweredItem = { row: number; question: string };
 
 export type DraftItem = {
   row: number;
   question: string;
-  // 下書きが空のケースも安全に受ける
   draft?: string;
 };
 
@@ -49,10 +47,9 @@ export type PredictResult = {
   urls: string[];
   confidence?: { label: string; score: number };
   mode?: string;
-  trace?: any;
+  trace?: unknown; // any → unknown
 };
 
-// 一括転送（ドライラン/実行）
 export type BulkDryResult = {
   mode: 'dryRun';
   processed: number;
@@ -72,7 +69,6 @@ export type BulkRunResult = {
   duration_ms: number;
 };
 
-// ========= 別名（既存コード互換用） =========
 export type HistoryListItem = HistoryItem;
 export type PredictResponse = PredictResult;
 export type BulkCompleteResult = BulkDryResult | BulkRunResult;
