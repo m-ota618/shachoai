@@ -308,13 +308,18 @@ export default function App() {
         <div className="app-header-divider" />
       </header>
 
-      {/* Topbar (mobile) */}
+      // 既存のTopbarを丸ごとこれに置き換え
       <div className="topbar">
         <button className="icon-btn" aria-label="メニュー" onClick={() => setNavOpen(true)}>
           {I.burger}
         </button>
-        <div className="topbar-title">プランナー質問管理</div>
+
+        {/* ここが追加：中央にロゴを置く層 */}
+        <div className="topbar-center">
+          <img src="/planter-lockup.svg" alt="Planter" className="brand-lockup-sm" />
+        </div>
       </div>
+
 
       <div className="layout">
         {/* Sidebar */}

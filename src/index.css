@@ -98,7 +98,7 @@ body {
   position: fixed;
   inset: 0 0 auto 0;
   z-index: 100;
-  display: none;
+  display: none;                 /* PCでは非表示 */
   height: 56px;
   align-items: center;
   gap: 10px;
@@ -107,14 +107,32 @@ body {
   color: var(--text);
   border-bottom: 1px solid var(--border);
 }
-.topbar .topbar-title { font-weight: 700; }
+
+/* 中央にロゴを置くためのレイヤー（ボタン操作は邪魔しない） */
+.topbar-center{
+  position: absolute;
+  left: 0; right: 0; top: 0; bottom: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;          /* ロゴがクリックをブロックしない */
+}
+
+/* SP用ロゴサイズ */
+.topbar .brand-lockup-sm{
+  height: 28px;
+  display: block;
+  object-fit: contain;
+}
+
+.topbar .topbar-title { font-weight: 700; } /* 使わないなら残してOK */
 
 /* SPではTopbarのみを使い、ヘッダ高も56pxに */
 @media (max-width: 960px){
   :root { --hdr-h: 56px; }
-  .app-header { display: none; }
-  .topbar { display: flex; }
+  .app-header { display: none; } /* PC用固定ヘッダは隠す */
+  .topbar { display: flex; }     /* SP時だけTopbarを出す */
 }
+
 
 /* ====== レイアウト：ヘッダ固定＋コンテンツだけスクロール ====== */
 .layout {
