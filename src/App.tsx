@@ -415,7 +415,6 @@ export default function App() {
         <div className="app-header-divider" />
       </header>
 
-      // 既存のTopbarを丸ごとこれに置き換え
       <div className="topbar">
         <button className="icon-btn" aria-label="メニュー" onClick={() => setNavOpen(true)}>
           {I.burger}
@@ -844,3 +843,4 @@ export default function App() {
     </>
   );
 }
+
