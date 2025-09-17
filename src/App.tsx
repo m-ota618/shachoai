@@ -234,6 +234,18 @@ export default function App() {
   const [updList, setUpdList] = useState<UpdateItem[] | null>(null);
   const [updCur, setUpdCur] = useState<UpdateItem | null>(null);
 
+  // ★追加：一覧↔詳細の切替ヘルパー
+  const openUpdateDetail = (it: UpdateItem) => {
+    setUpdCur(it);
+    // 上にスクロールして詳細を最上部に
+    try { window.scrollTo({ top: 0, behavior: 'auto' }); } catch {}
+  };
+
+  const closeUpdateDetail = async (reload?: boolean) => {
+    setUpdCur(null);
+    if (reload) await loadUpdateList(); // 保存後は再読み込み
+  };
+
   const initUpdateTab = async () => {
     setUpdList(null);
     if (!topicOptions.length) {
@@ -684,131 +696,141 @@ export default function App() {
             </div>
           )}
 
-          {/* データ編集 */}
+          {/* データ編集（一覧 or 詳細） */}
           {tab === 'update' && (
             <div className="wrap">
-              <h2 className="page-title">データ編集</h2>
-              <div className="row">
-                <div style={{ flex: '1 1 280px' }}>
-                  <input
-                    type="text"
-                    placeholder="キーワード検索（質問／回答）"
-                    value={updQuery}
-                    onChange={(e) => setUpdQuery(e.target.value)}
-                  />
-                  <div className="help">質問・回答に含まれる語で検索します。</div>
-                </div>
-                <div>
-                  <select value={updTopic} onChange={(e) => setUpdTopic(e.target.value)}>
-                    <option value="">（すべてのトピック）</option>
-                    {topicOptions.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <button className="btn btn-primary" onClick={loadUpdateList}>
-                    検索
-                  </button>
-                </div>
-              </div>
+              {!updCur ? (
+                <>
+                  <h2 className="page-title">データ編集</h2>
 
-              <div id="updList" style={{ marginTop: 12 }}>
-                {updList === null ? (
-                  <div className="skeleton">読み込み中...</div>
-                ) : updList.length === 0 ? (
-                  <div className="empty">該当するデータは見つかりませんでした。</div>
-                ) : (
-                  <div className="cards">
-                    {updList.map((it) => {
-                      const ans = it.answer || '';
-                      const ansClip = ans.length > 120 ? ans.slice(0, 120) + '…' : ans;
-                      const topic = it.topicKey || '';
-                      const area = it.area || it.topicName || '';
-                      return (
-                        <div key={it.row} className="card" onClick={() => setUpdCur(it)}>
-                          <div className="q">{it.question || '（無題）'}</div>
-                          <div className="meta">
-                            <span className="k">Topic</span>
-                            <span className="badge" style={badgeStyle(topic)}>{topic}</span>
-                            {' '}
-                            <span className="k">Area</span>
-                            <span className="badge">{area}</span>
-                            {' '}
-                            {it.syncedAt ? <span className="badge badge-light">最終同期 {it.syncedAt}</span> : null}
-                          </div>
-                          <div className="meta">回答：{ansClip}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {updCur && (
-                <div id="updEditor" className="card flat" style={{ marginTop: 12 }}>
-                  <div className="q" id="updQ">{updCur.question}</div>
-                  <div className="meta">
-                    トピック：<span id="updTopicKey">{updCur.topicKey}</span>{' '}
-                    <span className="badge" id="updTopicName">
-                      {updCur.topicName || updCur.area || ''}
-                    </span>
+                  {/* 検索フォーム */}
+                  <div className="row">
+                    <div style={{ flex: '1 1 280px' }}>
+                      <input
+                        type="text"
+                        placeholder="キーワード検索（質問／回答）"
+                        value={updQuery}
+                        onChange={(e) => setUpdQuery(e.target.value)}
+                      />
+                      <div className="help">質問・回答に含まれる語で検索します。</div>
+                    </div>
+                    <div>
+                      <select value={updTopic} onChange={(e) => setUpdTopic(e.target.value)}>
+                        <option value="">（すべてのトピック）</option>
+                        {topicOptions.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <button className="btn btn-primary" onClick={loadUpdateList}>
+                        検索
+                      </button>
+                    </div>
                   </div>
 
-                  <div className="label">回答（編集可）：</div>
-                  <textarea
-                    id="updA"
-                    value={updCur.answer || ''}
-                    onChange={(e) => setUpdCur({ ...updCur, answer: e.target.value })}
-                  />
+                  {/* 一覧 */}
+                  <div id="updList" style={{ marginTop: 12 }}>
+                    {updList === null ? (
+                      <div className="skeleton">読み込み中...</div>
+                    ) : updList.length === 0 ? (
+                      <div className="empty">該当するデータは見つかりませんでした。</div>
+                    ) : (
+                      <div className="cards">
+                        {updList.map((it) => {
+                          const ans = it.answer || '';
+                          const ansClip = ans.length > 120 ? ans.slice(0, 120) + '…' : ans;
+                          const topic = it.topicKey || '';
+                          const area = it.area || it.topicName || '';
+                          return (
+                            <div key={it.row} className="card" onClick={() => openUpdateDetail(it)}>
+                              <div className="q">{it.question || '（無題）'}</div>
+                              <div className="meta">
+                                <span className="k">Topic</span>
+                                <span className="badge" style={badgeStyle(topic)}>{topic}</span>
+                                　
+                                <span className="k">Area</span>
+                                <span className="badge">{area}</span>
+                                　{it.syncedAt ? <span className="badge badge-light">最終同期 {it.syncedAt}</span> : null}
+                              </div>
+                              <div className="meta">回答：{ansClip}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                /* ===== 詳細ビュー（未回答/下書きと同じフロー） ===== */
+                <div>
+                  <h2 className="page-title">詳細</h2>
+                  <div className="card flat">
+                    <div className="q" id="updQ">{updCur.question}</div>
+                    <div className="meta">
+                      トピック：<span id="updTopicKey">{updCur.topicKey}</span>{' '}
+                      <span className="badge" id="updTopicName">
+                        {updCur.topicName || updCur.area || ''}
+                      </span>
+                    </div>
 
-                  <UrlListEditor
-                    value={updCur.url || ''}
-                    onChange={(joined) => setUpdCur({ ...updCur, url: joined })}
-                    collapsedByDefault
-                    label="参照URL"
-                    help="1行に1URL（利用者に表示）"
-                  />
+                    <div className="label">回答（編集可）：</div>
+                    <textarea
+                      id="updA"
+                      value={updCur.answer || ''}
+                      onChange={(e) => setUpdCur({ ...updCur, answer: e.target.value })}
+                    />
 
+                    {/* URLは UrlListEditor を使用（既に導入済みの想定） */}
+                    <UrlListEditor
+                      value={updCur.url || ''}
+                      onChange={(joined) => setUpdCur({ ...updCur, url: joined })}
+                      collapsedByDefault
+                      label="参照URL"
+                      help="1行に1URL（利用者に表示）"
+                    />
 
-                  <div style={{ marginTop: 10 }}>
-                    <button
-                      className="btn btn-primary"
-                      onClick={async () => {
-                        if (!updCur) return;
-                        if (!updCur.answer?.trim()) {
-                          alert('回答を入力してください');
-                          return;
-                        }
-                        try {
-                          const ok = await saveUpdateRow(updCur.row, {
-                            answer: updCur.answer,
-                            url: updCur.url || ''
-                          });
-                          if (ok) {
-                            alert('保存しました。');
-                            await loadUpdateList();
-                          } else {
-                            // 例外ではないが失敗扱い：traceはないので明示エラー化して統一表示
-                            showApiError(new Error('保存に失敗しました。'), '保存エラー');
+                    <div style={{ marginTop: 10 }}>
+                      <button
+                        className="btn btn-primary"
+                        onClick={async () => {
+                          if (!updCur) return;
+                          if (!updCur.answer?.trim()) {
+                            alert('回答を入力してください');
+                            return;
                           }
-                        } catch (err: unknown) {
-                          showApiError(err, '保存エラー');
-                        }
-                      }}
-                    >
-                      保存
-                    </button>
-                    <button className="btn btn-secondary" onClick={() => setUpdCur(null)}>
-                      キャンセル
-                    </button>
+                          try {
+                            const ok = await saveUpdateRow(updCur.row, {
+                              answer: updCur.answer,
+                              url: updCur.url || ''
+                            });
+                            if (ok) {
+                              alert('保存しました。');
+                              await closeUpdateDetail(true); // 一覧へ戻り再読込
+                            } else {
+                              alert('保存に失敗しました。');
+                            }
+                          } catch (e: any) {
+                            // showApiError を使っているならこちらでもOK
+                            // showApiError(e, '保存エラー');
+                            alert('エラー: ' + (e?.message || e));
+                          }
+                        }}
+                      >
+                        保存
+                      </button>
+                      <button className="btn btn-secondary" onClick={() => closeUpdateDetail(false)}>
+                        戻る
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
             </div>
           )}
+
 
           {/* 同期 */}
           {tab === 'sync' && (
