@@ -257,8 +257,11 @@ export default function App() {
   // === Icons (inline SVG) ===
   const I = {
     burger: (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
-        <path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+        {/* 端を短く・丸める・均等間隔 */}
+        <path d="M5 7H19M5 12H19M5 17H19"
+              stroke="currentColor" strokeWidth="1.8"
+              strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     ),
     unans: (
@@ -287,8 +290,11 @@ export default function App() {
       </svg>
     ),
     close: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-        <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+        {/* 交点が中心に来るよう調整＆丸める */}
+        <path d="M7 7L17 17M17 7L7 17"
+              stroke="currentColor" strokeWidth="2"
+              strokeLinecap="round" strokeLinejoin="round" />
       </svg>
     )
   };

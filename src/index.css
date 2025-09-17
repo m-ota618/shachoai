@@ -340,3 +340,39 @@ html, body { overscroll-behavior: none; }
     display: none;
   }
 }
+
+/* Icon button (共通) */
+.icon-btn {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #0b2540;
+  transition: background .2s ease, box-shadow .2s ease, border-color .2s ease, transform .06s ease;
+}
+.icon-btn:hover {
+  background: #f4f9ff;
+  border-color: #dbeafe;
+  box-shadow: 0 2px 8px rgba(2,132,199,.12);
+}
+.icon-btn:active { transform: translateY(1px); }
+.icon-btn svg { width: 22px; height: 22px; display: block; }
+
+/* サイドバーの×は少し淡く */
+.sidebar .icon-btn.close {
+  color: #0b4060;
+  background: rgba(255,255,255,.7);
+  border: 1px solid rgba(2,132,199,.18);
+}
+.sidebar .icon-btn.close:hover {
+  background: #ffffff;
+  box-shadow: 0 4px 12px rgba(16,24,40,.12);
+}
+
+/* PC表示では×は非表示（既定で固定サイドバー） */
+@media (min-width: 961px) {
+  .sidebar .icon-btn.close { display: none; }
+}
