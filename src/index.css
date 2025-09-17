@@ -4,6 +4,8 @@
 
   /* Layout */
   --sidebar-w: 280px;
+  --hdr-h: 112px;    /* PCのヘッダ高 */
+  --topbar-h: 56px;  /* SPのTopbar高 */
 
   /* Palette */
   --app-bg: #f7f9fc;
@@ -53,9 +55,6 @@
   --auth-danger: #b42318;
   --auth-success: #0b7a3b;
   --auth-shadow: 0 10px 30px rgba(16,24,40,.10);
-
-  /* Header height */
-  --hdr-h: 112px;   /* PCのヘッダ高 */
 }
 
 * { box-sizing: border-box; }
@@ -69,10 +68,10 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* ===== 固定ヘッダ（PC） ===== */
+/* ===== PCヘッダ：sticky でシンプルに（固定のズレを排除） ===== */
 .app-header {
-  position: fixed;
-  inset: 0 0 auto 0;
+  position: sticky;
+  top: 0;
   z-index: 100;
   height: var(--hdr-h);
   display: flex;
@@ -83,23 +82,16 @@ body {
   color: var(--text);
   border-bottom: 1px solid var(--border);
 }
-/* ロゴ：1.2倍。見切れ防止の微小パディング */
-.brand-lockup{
-  height: calc(56px * 1.2);
-  display: block;
-  object-fit: contain;
-  padding-right: 6px;
-  padding-bottom: 2px;
-}
+.brand-lockup { height: 56px; display: block; object-fit: contain; }
 .app-header-divider { flex: 1 1 auto; }
 
 /* ===== モバイル Topbar（SP時のみ表示） ===== */
-.topbar{
-  position: fixed;
-  inset: 0 0 auto 0;
+.topbar {
+  position: sticky;
+  top: 0;
   z-index: 100;
-  display: none;                 /* PCでは非表示 */
-  height: 56px;
+  display: none; /* PCでは非表示 */
+  height: var(--topbar-h);
   align-items: center;
   gap: 10px;
   padding: 0 var(--space-4);
@@ -107,44 +99,30 @@ body {
   color: var(--text);
   border-bottom: 1px solid var(--border);
 }
+.topbar .brand-lockup-sm { height: 28px; display: block; object-fit: contain; }
 
-/* 中央にロゴを置くためのレイヤー（ボタン操作は邪魔しない） */
-.topbar-center{
-  position: absolute;
-  left: 0; right: 0; top: 0; bottom: 0;
-  display: grid;
-  place-items: center;
-  pointer-events: none;          /* ロゴがクリックをブロックしない */
-}
-
-/* SP用ロゴサイズ */
-.topbar .brand-lockup-sm{
-  height: 28px;
-  display: block;
-  object-fit: contain;
-}
-
-.topbar .topbar-title { font-weight: 700; } /* 使わないなら残してOK */
-
-/* SPではTopbarのみを使い、ヘッダ高も56pxに */
+/* SPではTopbarのみ使用（ヘッダ非表示） */
 @media (max-width: 960px){
-  :root { --hdr-h: 56px; }
-  .app-header { display: none; } /* PC用固定ヘッダは隠す */
-  .topbar { display: flex; }     /* SP時だけTopbarを出す */
+  .app-header { display: none; }
+  .topbar { display: flex; }
 }
 
-
-/* ====== レイアウト：ヘッダ固定＋コンテンツだけスクロール ====== */
+/* ===== レイアウト：上はヘッダ/Topbar分だけ引く、内部2カラムグリッド ===== */
 .layout {
-  margin-top: var(--hdr-h);
-  height: calc(100vh - var(--hdr-h));
-  height: calc(100dvh - var(--hdr-h)); /* 対応ブラウザでは誤差ゼロ */
-  overflow: hidden;
+  height: calc(100dvh - var(--hdr-h));
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr;
+  overflow: hidden; /* 外側はスクロールさせない */
+}
+/* SPはTopbar高さで差し引き・1カラム */
+@media (max-width: 960px){
+  .layout {
+    height: calc(100dvh - var(--topbar-h));
+    grid-template-columns: 1fr;
+  }
 }
 
-/* サイドバー（自身の中でオーバーフロー） */
+/* サイドバー：PCは常に表示・内部のみスクロール */
 .sidebar {
   height: 100%;
   background: var(--sidebar-bg);
@@ -170,17 +148,13 @@ body {
 .nav-item svg { flex: 0 0 auto; } .nav-item span { flex: 1 1 auto; }
 .sidebar-footer { margin-top: auto; color: #3f6b83; font-size: 12px; opacity: .9; }
 
-/* モバイル：サイドバーはヘッダ下に出るドロワー */
+/* モバイル：サイドバーはドロワー */
 .sidebar-backdrop { display: none; }
 @media (max-width: 960px) {
-  .layout { grid-template-columns: 1fr; }
   .sidebar {
     position: fixed;
-    left: 0;
-    top: var(--hdr-h);
-    bottom: 0;
-    width: 84%;
-    max-width: 320px;
+    left: 0; top: var(--topbar-h); bottom: 0;
+    width: 84%; max-width: 320px;
     transform: translateX(-100%);
     transition: transform .25s ease;
     z-index: 60;
@@ -189,8 +163,7 @@ body {
   .sidebar.open { transform: translateX(0); }
   .sidebar-backdrop {
     position: fixed;
-    left: 0; right: 0;
-    top: var(--hdr-h); bottom: 0;
+    left: 0; right: 0; top: var(--topbar-h); bottom: 0;
     background: rgba(2,132,199,.25);
     backdrop-filter: blur(1px);
     opacity: 0; visibility: hidden;
@@ -200,59 +173,50 @@ body {
   .sidebar-backdrop.show { opacity: 1; visibility: visible; pointer-events: auto; }
 }
 
-/* ====== 質問カードのエリアだけスクロール ====== */
+/* ===== メインコンテンツ：内部だけスクロール ===== */
 .content {
   min-width: 0;
   height: 100%;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
-  padding: 24px 24px 12px; /* ← 復元（下に少し余白） */;   /* ← 下余白ゼロ */
-  background: #f6f8fb;   /* ← ほんのりグレー */
-}
-@media (max-width: 960px) {
-  .content{
-    .content{ padding: 16px 16px 10px; background: #f6f8fb; }
-    background: #f6f8fb;
-  }
+  padding: 24px 24px 12px;
+  background: #f6f8fb;
 }
 
-.page-title { margin: 0 0 10px; font-size: 20px; color: #0b2540; font-weight: 800; }
-.wrap { max-width: 980px; margin: 0 auto; }
-
-/* ====== Cards grid ====== */
+/* ===== Cards grid ===== */
 .cards, .cards-history { display: grid; gap: 12px; grid-template-columns: 1fr; }
 @media (min-width: 720px)  { .cards, .cards-history { grid-template-columns: 1fr 1fr; } }
 @media (min-width: 1120px) { .cards, .cards-history { grid-template-columns: 1fr 1fr 1fr; } }
 .cards > .card, .cards-history > .card { width: 100%; }
 
-/* カード：影を少し濃く */
+/* カード */
 .card {
   background: #fff;
   padding: var(--space-4);
   border-radius: var(--radius);
-  box-shadow: 0 6px 20px rgba(16,24,40,.12);        /* 通常時を少し強めに */
+  box-shadow: 0 6px 20px rgba(16,24,40,.12);
   border: 1px solid var(--border);
   transition: transform .06s ease, box-shadow .2s ease, background .2s ease;
   cursor: pointer;
 }
-.card:hover {
-  background: #f9fcff;
-  box-shadow: 0 10px 30px rgba(16,24,40,.16);       /* ホバー時も少し強めに */
-  transform: translateY(-1px);
-}
+.card:hover { background: #f9fcff; box-shadow: 0 10px 30px rgba(16,24,40,.16); transform: translateY(-1px); }
 .card:active { transform: translateY(0); }
 .card.flat { cursor: default; }
+
+.page-title { margin: 0 0 10px; font-size: 20px; color: #0b2540; font-weight: 800; }
+.wrap { max-width: 980px; margin: 0 auto; }
 
 .q { font-weight: 800; font-size: var(--fs-xl); line-height: 1.6; white-space: pre-wrap; color: var(--text); overflow-wrap: anywhere; word-break: break-word; }
 .meta { color: var(--muted); font-size: var(--fs-md); margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 .label { font-size: 13px; color: #0b4060; margin: 12px 0 6px; font-weight: 700; }
 .help { color: #577187; font-size: 12px; }
 
-textarea, input[type="text"], select {
+/* フォーム */
+textarea, input[type="text"], input[type="url"], select {
   width: 100%; padding: 10px 12px; border: 1px solid var(--border);
   border-radius: var(--radius); background: #fff; transition: border-color .15s ease, box-shadow .15s ease; font-size: var(--fs-lg);
 }
-textarea:focus, input[type="text"]:focus, select:focus {
+textarea:focus, input[type="text"]:focus, input[type="url"]:focus, select:focus {
   border-color: #b3e7ff; box-shadow: 0 0 0 4px rgba(56,189,248,.18); outline: none;
 }
 .box { background: #fbfdff; border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-4); white-space: pre-wrap; }
@@ -285,16 +249,15 @@ textarea:focus, input[type="text"]:focus, select:focus {
 .cards::-webkit-scrollbar, .sidebar::-webkit-scrollbar { width: 10px; height: 10px; }
 .cards::-webkit-scrollbar-thumb, .sidebar::-webkit-scrollbar-thumb { background: #c9e9fb; border-radius: 999px; }
 
-/* ================================================================== */
 /* =====================  Login Page (Simple)  ====================== */
-/* ================================================================== */
-
 .auth-center {
-  min-height: calc(100vh - var(--hdr-h));
-  min-height: calc(100dvh - var(--hdr-h)); /* 下端の誤差をさらに潰す */
+  min-height: calc(100dvh - var(--hdr-h));
   display: grid;
   place-items: center;
   padding: 28px 16px 40px;
+}
+@media (max-width: 960px){
+  .auth-center { min-height: calc(100dvh - var(--topbar-h)); }
 }
 .auth-card {
   width: 440px; max-width: 92vw; background: var(--auth-card-bg);
@@ -332,131 +295,22 @@ textarea:focus, input[type="text"]:focus, select:focus {
 .auth-alert {
   margin-top: 10px; padding: 10px 12px; border-radius: 12px; font-size: 14px; line-height: 1.4; border: 1px solid;
 }
-.auth-alert.ok { background: #ecfdf5; color: var(--auth-success); border-color: #a7f3d0; }
-.auth-alert.err { background: #fef2f2; color: var(--auth-danger); border-color: #fecaca; }
+.auth-alert.ok { background: #ecfdf5; color: #0b7a3b; border-color: #a7f3d0; }
+.auth-alert.err { background: #fef2f2; color: #b42318; border-color: #fecaca; }
 
-/* 追加：外側をスクロールさせない（下の帯が出ない） */
-html, body { overscroll-behavior: none; }
-
-/* 追加：.content 内でスクロールを完結させる */
-.content { overscroll-behavior: contain; }
-
-/* PCだけ外側のスクロールを禁止して “帯” を消す */
-@media (min-width: 961px) {
-  html, body {
-    height: 100%;
-    overflow: hidden; /* ← これが肝 */
-  }
-  #root {
-    height: 100dvh;   /* ビューポート高にフィット */
-  }
-}
-
-/* PC幅ではサイドバーの✕を隠す（モバイルだけ表示） */
-@media (min-width: 961px) {
-  .sidebar .icon-btn.close {
-    display: none;
-  }
-}
-
-/* Icon button (共通) */
-.icon-btn {
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  border-radius: 10px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: #0b2540;
-  transition: background .2s ease, box-shadow .2s ease, border-color .2s ease, transform .06s ease;
-}
-.icon-btn:hover {
-  background: #f4f9ff;
-  border-color: #dbeafe;
-  box-shadow: 0 2px 8px rgba(2,132,199,.12);
-}
-.icon-btn:active { transform: translateY(1px); }
-.icon-btn svg { width: 22px; height: 22px; display: block; }
-
-/* サイドバーの×は少し淡く */
-.sidebar .icon-btn.close {
-  color: #0b4060;
-  background: rgba(255,255,255,.7);
-  border: 1px solid rgba(2,132,199,.18);
-}
-.sidebar .icon-btn.close:hover {
-  background: #ffffff;
-  box-shadow: 0 4px 12px rgba(16,24,40,.12);
-}
-
-/* PC表示では×は非表示（既定で固定サイドバー） */
+/* PC幅では×は非表示（既定で固定サイドバー） */
 @media (min-width: 961px) {
   .sidebar .icon-btn.close { display: none; }
 }
-
-
-/* ===== レイアウト調整（隙間除去＆一貫オフセット） ===== */
-:root{
-  --header-h: 56px;   /* ヘッダの実高さに合わせて */
-  --sidebar-w: 240px; /* サイドバー幅 */
-  --topbar-h: 48px;   /* モバイルの上部バー */
+.icon-btn {
+  width: 36px; height: 36px; display: grid; place-items: center;
+  border-radius: 10px; border: 1px solid transparent; background: transparent; color: #0b2540;
+  transition: background .2s ease, box-shadow .2s ease, border-color .2s ease, transform .06s ease;
 }
-
-html, body, #root { height: 100%; }
-body { margin: 0; }
-
-/* ヘッダ固定 */
-.app-header{
-  position: fixed;
-  top: 0; left: 0; right: 0;
-  height: var(--header-h);
-  z-index: 1000;
-  background: #fff;
+.icon-btn:hover { background: #f4f9ff; border-color: #dbeafe; box-shadow: 0 2px 8px rgba(2,132,199,.12); }
+.icon-btn:active { transform: translateY(1px); }
+.icon-btn svg { width: 22px; height: 22px; display: block; }
+.sidebar .icon-btn.close {
+  color: #0b4060; background: rgba(255,255,255,.7); border: 1px solid rgba(2,132,199,.18);
 }
-
-/* レイアウトの基礎高さ */
-.layout{ min-height: 100vh; }
-
-/* サイドバー固定（大画面） */
-.sidebar{
-  position: fixed;
-  top: var(--header-h);
-  left: 0;
-  bottom: 0;
-  width: var(--sidebar-w);
-  overflow: auto;
-}
-
-/* コンテンツはヘッダとサイドバーを避ける */
-.content{
-  margin-left: var(--sidebar-w);
-  padding: 16px;
-  padding-top: calc(var(--header-h) + 16px);
-  min-height: 100vh;
-  box-sizing: border-box;
-}
-
-/* 最初の見出しの“余白ダブり”回避 */
-.content .wrap:first-child{ margin-top: 0; }
-.page-title{ margin-top: 0; }
-
-/* モバイル時：トップバーぶんを追加オフセット、サイドバーはオーバーレイ表示前提 */
-@media (max-width: 960px){
-  .topbar{
-    position: fixed;
-    top: var(--header-h);
-    left: 0; right: 0;
-    height: var(--topbar-h);
-    z-index: 999;
-    /* displayは既存CSSに準拠（必要なら display:flex;） */
-  }
-  .sidebar{
-    top: calc(var(--header-h) + var(--topbar-h));
-    width: min(80vw, 320px);
-  }
-  .content{
-    margin-left: 0;
-    padding-top: calc(var(--header-h) + var(--topbar-h) + 16px);
-  }
-}
+.sidebar .icon-btn.close:hover { background: #ffffff; box-shadow: 0 4px 12px rgba(16,24,40,.12); }
