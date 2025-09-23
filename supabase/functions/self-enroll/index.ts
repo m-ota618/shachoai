@@ -13,11 +13,13 @@ const supaAdmin = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
+// CORS 許可オリジン（カンマ区切り）
 const CORS = (Deno.env.get("CORS_ALLOW_ORIGINS") ?? "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
+// リダイレクト先
 const INVITE_REDIRECT_TO =
   Deno.env.get("INVITE_REDIRECT_TO") ||
   `${Deno.env.get("SITE_URL")}/set-password`;
@@ -26,12 +28,18 @@ const AUTH_REDIRECT_TO =
   Deno.env.get("AUTH_REDIRECT_TO") ||
   `${Deno.env.get("SITE_URL")}/auth`;
 
-function corsHeaders(origin: string | null) {
-  const h: Record<string, string> = { Vary: "Origin" };
-  if (origin && (CORS.length === 0 || CORS.includes(origin))) {
-    h["Access-Control-Allow-Origin"] = origin;
-    h["Access-Control-Allow-Headers"] = "Content-Type, Authorization, apikey";
+// ★ 反映（reflect）型のCORSヘッダ: SDKが付ける x-client-info 等を自動許可
+function corsHeaders(origin: string | null, req: Request) {
+  const allow = origin && (CORS.length === 0 || CORS.includes(origin));
+  const requestedHeaders = req.headers.get("Access-Control-Request-Headers") || "";
+  const h: Record<string, string> = {
+    Vary: "Origin, Access-Control-Request-Headers",
+  };
+  if (allow) {
+    h["Access-Control-Allow-Origin"] = origin!;
     h["Access-Control-Allow-Methods"] = "POST, OPTIONS";
+    h["Access-Control-Allow-Headers"] =
+      requestedHeaders || "authorization, apikey, content-type, x-client-info";
   }
   return h;
 }
@@ -42,8 +50,9 @@ const domainMatches = (cand: string, base: string, allowSub: boolean) =>
 
 Deno.serve(async (req) => {
   const origin = req.headers.get("Origin");
-  const baseHeaders = { "content-type": "application/json", ...corsHeaders(origin) };
+  const baseHeaders = { "content-type": "application/json", ...corsHeaders(origin, req) };
 
+  // CORS preflight
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: baseHeaders });
   if (req.method !== "POST")
     return new Response(JSON.stringify({ error: "method_not_allowed" }), { status: 405, headers: baseHeaders });
@@ -56,7 +65,7 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "invalid_email" }), { status: 400, headers: baseHeaders });
     }
 
-    // 1) 許可ドメインの確認
+    // 1) 許可ドメインの確認（※実テーブル名に合わせる）
     const { data: domains, error: domErr } = await supaAdmin
       .from("signup_allowed_domains")
       .select("org_id, domain, allow_subdomains");
