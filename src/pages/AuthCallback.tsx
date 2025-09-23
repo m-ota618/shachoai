@@ -5,54 +5,55 @@ import { supabase } from "../lib/supabase";
 
 /**
  * メールリンク（magiclink / signup / invite / email_change / recovery）の着地点。
- * - 初期レンダーで URLハッシュ(#...) を先取りしてから判定（Supabase が消す前に確保）
- * - type=recovery は /reset-password へ即遷移（セッション有無より優先）
- * - それ以外は、セッションが確立したら /app（または next）へ
+ * - 初回レンダーで URL ハッシュを確保（Supabase に消される前に読む）
+ * - type=recovery は最優先で /reset-password へ
+ * - それ以外はセッション確立を待って常に /set-password へ（登録有無は区別しない）
  */
 export default function AuthCallback() {
   const nav = useNavigate();
   const loc = useLocation();
   const [msg, setMsg] = useState("認証処理を実行しています…");
 
-  // ★ ここが重要：初期レンダー時に“同期的”にハッシュを奪取
+  // 初期レンダー時にハッシュを奪取
   const initial = useMemo(() => {
     const hash = typeof window !== "undefined" ? (window.location.hash || "") : "";
     const q = new URLSearchParams(hash.replace(/^#/, ""));
     return {
       hash,
-      type: q.get("type"), // "recovery" | "magiclink" | "signup" | ...
+      type: q.get("type"), // "recovery" | "magiclink" | "signup" | "invite" | "email_change" | ...
     };
-  }, []); // ← 初期化時の一度きり
+  }, []);
 
   useEffect(() => {
     let alive = true;
 
-    // 1) recovery は最優先で /reset-password に飛ばす
+    // 1) recovery は無条件で /reset-password へ（セッション有無より優先）
     if (initial.type === "recovery") {
       nav("/reset-password", { replace: true });
       return;
     }
 
-    // 2) それ以外（magiclink / signup / invite / email_change など）
+    // 2) それ以外（magiclink / signup / invite / email_change など）は
+    //    セッション確立後に /set-password へ集約
     const run = async () => {
-      const next = new URLSearchParams(window.location.search).get("next") || "/app";
+      const dest = "/set-password"; // ← ここに集約（next は使わない）
 
-      // まず即時にセッション確認
+      // 即時セッション確認
       const { data } = await supabase.auth.getSession();
       if (!alive) return;
 
       if (data.session) {
-        nav(next, { replace: true });
+        nav(dest, { replace: true });
         return;
       }
 
-      // 遅延に備え、onAuthStateChange を待機
+      // 遅延に備えて onAuthStateChange を待機
       const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
         if (!alive) return;
-        if (session) nav(next, { replace: true });
+        if (session) nav(dest, { replace: true });
       });
 
-      // タイムアウト保険
+      // タイムアウト保険（UI 文言のみ）
       const timeout = setTimeout(() => {
         if (!alive) return;
         setMsg("認証に時間がかかっています。メールのリンクをもう一度開くか、ページを再読み込みしてください。");
@@ -65,7 +66,6 @@ export default function AuthCallback() {
     };
 
     run();
-
     return () => { alive = false; };
   }, [initial.type, nav, loc]);
 
@@ -78,7 +78,7 @@ export default function AuthCallback() {
       <main className="auth-center">
         <div className="auth-card" aria-live="polite">
           <h2 className="auth-card-title">ログイン処理中</h2>
-        <div className="skeleton">{msg}</div>
+          <div className="skeleton">{msg}</div>
         </div>
       </main>
     </>

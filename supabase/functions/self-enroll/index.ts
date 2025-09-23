@@ -1,6 +1,11 @@
 // supabase/functions/self-enroll/index.ts
-// 目的: 許可ドメインを確認し、OKなら Supabase の「招待メール」を送る
-// 招待リンクから来たユーザーは /set-password で初回パスワードを設定できる
+// 目的: 入力メールのドメインが許可されていれば、
+//       - 未登録: 招待メール（/set-passwordへ）を送信
+//       - 登録済: サインイン用のマジックリンク（/authへ）を送信
+//     両者の「違い」はレスポンスに出さない（列挙対策）。
+//     さらに、org_memberships への所属付与は冪等に実施。
+// 必要な環境変数: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+// 任意の環境変数: CORS_ALLOW_ORIGINS (カンマ区切り), INVITE_REDIRECT_TO, AUTH_REDIRECT_TO, SITE_URL
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -16,8 +21,15 @@ const CORS = (Deno.env.get("CORS_ALLOW_ORIGINS") ?? "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-// 招待リンクのリダイレクト先（完全一致で Auth の Redirect URLs に登録しておく）
-const REDIRECT_TO = Deno.env.get("INVITE_REDIRECT_TO") || `${Deno.env.get("SITE_URL")}/set-password`;
+// 招待リンクのリダイレクト先（/set-password を想定）
+const INVITE_REDIRECT_TO =
+  Deno.env.get("INVITE_REDIRECT_TO") ||
+  `${Deno.env.get("SITE_URL")}/set-password`;
+
+// 既存ユーザー向けマジックリンクのリダイレクト先（/auth を想定）
+const AUTH_REDIRECT_TO =
+  Deno.env.get("AUTH_REDIRECT_TO") ||
+  `${Deno.env.get("SITE_URL")}/auth`;
 
 function corsHeaders(origin: string | null) {
   const h: Record<string, string> = { Vary: "Origin" };
@@ -50,15 +62,12 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "invalid_email" }), { status: 400, headers: baseHeaders });
     }
 
-    // 1) 許可ドメインの確認
+    // 1) 許可ドメインの確認（org_domains: domain, allow_subdomains, org_id）
     const { data: domains, error: domErr } = await supaAdmin
       .from("org_domains")
       .select("org_id, domain, allow_subdomains");
     if (domErr) {
-      return new Response(JSON.stringify({ error: "server_error", detail: domErr.message }), {
-        status: 500,
-        headers: baseHeaders,
-      });
+      return new Response(JSON.stringify({ error: "server_error" }), { status: 500, headers: baseHeaders });
     }
 
     let orgId: string | null = null;
@@ -68,39 +77,89 @@ Deno.serve(async (req) => {
       if (domainMatches(d, base, allow)) { orgId = (row as any).org_id; break; }
     }
     if (!orgId) {
+      // 許可外は 403 を返す（UIでは「登録できません」の固定文言にする）
       return new Response(JSON.stringify({ error: "forbidden_domain" }), { status: 403, headers: baseHeaders });
     }
 
-    // 2) 招待メール送信（※この時点でユーザーは「招待状態」で作成される）
-    const inviteRes = await supaAdmin.auth.admin.inviteUserByEmail(e, {
-      redirectTo: REDIRECT_TO,                            // ← /set-password に戻す
-      data: { default_tenant_id: orgId, onboarded: false } // ← 任意の user_metadata
+    // 2) 登録済みかは UI に出さないが、内部では分岐して適切なメールを送る
+    //    - 未登録: inviteUserByEmail
+    //    - 登録済: admin.generateLink('magiclink')
+    //
+    //    listUsers でメール一致検索（外部に漏らさない前提の内部利用）
+    const { data: usersList, error: listErr } = await supaAdmin.auth.admin.listUsers({
+      page: 1,
+      perPage: 1,
+      email: e,
     });
-    if (inviteRes.error) {
-      return new Response(JSON.stringify({ error: "invite_failed", detail: inviteRes.error.message }), {
-        status: 500,
-        headers: baseHeaders,
-      });
+    if (listErr) {
+      return new Response(JSON.stringify({ error: "server_error" }), { status: 500, headers: baseHeaders });
     }
 
-    // 3) 所属付与（既に存在していた場合にも冪等に）
-    const uid = inviteRes.data?.user?.id;
-    if (uid) {
+    const exists = (usersList?.users?.length ?? 0) > 0;
+
+    if (!exists) {
+      // ---- 未登録: 招待メール（/set-password） ----
+      const inviteRes = await supaAdmin.auth.admin.inviteUserByEmail(e, {
+        redirectTo: INVITE_REDIRECT_TO,
+        data: { default_tenant_id: orgId, onboarded: false }, // 任意 metadata
+      });
+
+      if (inviteRes.error) {
+        // 「既に存在」等の詳細は外に出さない
+        return new Response(JSON.stringify({ error: "server_error" }), { status: 500, headers: baseHeaders });
+      }
+
+      const uid = inviteRes.data?.user?.id;
+      if (uid) {
+        // memberships を冪等 upsert
+        await supaAdmin
+          .from("org_memberships")
+          .upsert(
+            { org_id: orgId, user_id: uid, role: "member" },
+            { onConflict: "org_id,user_id", ignoreDuplicates: true }
+          );
+
+        // 既定テナントの app_metadata 付与（なければ）
+        const appMeta = (inviteRes.data.user.app_metadata ?? {}) as Record<string, unknown>;
+        if (!appMeta["default_tenant_id"]) {
+          await supaAdmin.auth.admin.updateUserById(uid, {
+            app_metadata: { ...appMeta, default_tenant_id: orgId },
+          });
+        }
+      }
+    } else {
+      // ---- 登録済み: マジックリンク（/auth） ----
+      const existing = usersList!.users![0];
+      // generateLink を使ってサインイン用のメールを送付
+      const gen = await supaAdmin.auth.admin.generateLink({
+        type: "magiclink",
+        email: e,
+        options: { redirectTo: AUTH_REDIRECT_TO },
+      });
+      if (gen.error) {
+        return new Response(JSON.stringify({ error: "server_error" }), { status: 500, headers: baseHeaders });
+      }
+
+      // 所属は冪等に確保（既存ユーザーでも org_memberships を保証）
       await supaAdmin
         .from("org_memberships")
-        .upsert({ org_id: orgId, user_id: uid, role: "member" }, { onConflict: "org_id,user_id", ignoreDuplicates: true });
-      // app_metadata の既定テナント補正（あれば維持）
-      const appMeta = (inviteRes.data.user.app_metadata ?? {}) as Record<string, unknown>;
+        .upsert(
+          { org_id: orgId, user_id: existing.id, role: "member" },
+          { onConflict: "org_id,user_id", ignoreDuplicates: true }
+        );
+
+      // 既定テナントの app_metadata を補正（なければ）
+      const appMeta = (existing.app_metadata ?? {}) as Record<string, unknown>;
       if (!appMeta["default_tenant_id"]) {
-        await supaAdmin.auth.admin.updateUserById(uid, { app_metadata: { ...appMeta, default_tenant_id: orgId } });
+        await supaAdmin.auth.admin.updateUserById(existing.id, {
+          app_metadata: { ...appMeta, default_tenant_id: orgId },
+        });
       }
     }
 
-    return new Response(JSON.stringify({ ok: true, invited: true }), { status: 200, headers: baseHeaders });
-  } catch (err) {
-    return new Response(
-      JSON.stringify({ error: "server_error", detail: String((err as any)?.message ?? err) }),
-      { status: 500, headers: baseHeaders }
-    );
+    // 3) UI には登録有無を出さないため、成功時は常に同じレスポンス
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: baseHeaders });
+  } catch {
+    return new Response(JSON.stringify({ error: "server_error" }), { status: 500, headers: baseHeaders });
   }
 });

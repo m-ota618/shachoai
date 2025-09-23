@@ -1,3 +1,4 @@
+// src/pages/Signup.tsx
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
@@ -5,48 +6,49 @@ import { supabase } from "../lib/supabase";
 export default function Signup() {
   const nav = useNavigate();
   const [email, setEmail] = useState("");
-  const [pw, setPw] = useState("");
-  const [pw2, setPw2] = useState("");
-  const [showPw, setShowPw] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // 既ログインでも /signup から自動で /app に飛ばない（オンボーディングのため）
+  // 既ログインでも /signup から自動遷移しない（オンボーディングのため）
   useEffect(() => {
-    // 何もしない（従来の getSession→/app は削除）
+    // 何もしない
   }, []);
 
-  const canSubmit =
-    email && pw.length >= 8 && pw === pw2 && !busy;
+  const canSubmit = !!email && !busy;
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setMsg(null); setOkMsg(null);
-    if (pw !== pw2) { setMsg("確認用パスワードが一致しません。"); return; }
-
+    setMsg(null);
+    setOkMsg(null);
     setBusy(true);
-    try {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password: pw,
-        options: {
-          emailRedirectTo: `${window.location.origin}/auth`, // ← 認証完了の戻り先（/auth を Redirect URLs に登録済みであること）
-          // data: { 任意の user_metadata }
-        },
-      });
-      if (error) throw error;
 
-      // メール確認ONの場合は「確認メールを送信しました」と出す
-      setOkMsg("確認メールを送信しました。メール内のリンクから続行してください。");
-      // すぐに遷移させない。ユーザーはメールのリンクを踏んで /auth に戻ってくる。
-    } catch (err: any) {
-      const m = String(err?.message || "");
-      if (m.includes("forbidden_domain")) {
-        setMsg("許可されていないメールドメインです。会社のメールアドレスで入力してください。");
-      } else {
-        setMsg(`登録に失敗：${m || "不明なエラー"}`);
+    try {
+      // 1) Edge Function に渡して、許可ドメインなら
+      //    - 未登録: 招待メール（/set-password）
+      //    - 既存: マジックリンク（/auth）
+      //    を送ってもらう（登録有無は UI に出さない）
+      const res = await fetch("/functions/v1/self-enroll", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+
+      if (!res.ok) {
+        // 許可外ドメインのみ明示、それ以外は統一メッセージ
+        if (res.status === 403) {
+          setMsg("このドメインのメールアドレスは登録できません。会社のメールアドレスで入力してください。");
+        } else {
+          setMsg("処理に失敗しました。時間をおいて再度お試しください。");
+        }
+        return;
       }
+
+      // 2) 案内は常に同一メッセージ（列挙対策）
+      setOkMsg("入力されたメールアドレス宛に案内メールを送信しました。届かない場合は迷惑メールをご確認ください。");
+      // 画面遷移は行わず、ユーザーがメール内リンクから /auth へ戻る
+    } catch {
+      setMsg("通信エラーが発生しました。時間をおいて再度お試しください。");
     } finally {
       setBusy(false);
     }
@@ -85,74 +87,11 @@ export default function Signup() {
             />
           </div>
 
-          <label className="label" htmlFor="pw" style={{ marginTop: 10 }}>パスワード</label>
-          <div className="input-group">
-            <span className="input-icon" aria-hidden>
-              <svg width="18" height="18" viewBox="0 0 24 24">
-                <rect x="5" y="10" width="14" height="9" rx="2" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-                <path d="M8 10V8a4 4 0 0 1 8 0v2" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-              </svg>
-            </span>
-            <input
-              id="pw"
-              type={showPw ? "text" : "password"}
-              placeholder="8文字以上"
-              value={pw}
-              onChange={(e) => setPw(e.target.value)}
-              disabled={busy}
-              className="input"
-              required
-              minLength={8}
-              autoComplete="new-password"
-            />
-            <button
-              type="button"
-              className="input-affix-btn"
-              aria-label={showPw ? "パスワードを隠す" : "パスワードを表示"}
-              onClick={() => setShowPw(v => !v)}
-              disabled={busy}
-            >
-              {showPw ? (
-                <svg width="18" height="18" viewBox="0 0 24 24">
-                  <path d="M3 3l18 18" stroke="currentColor" strokeWidth="1.8"/>
-                  <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7c-2.6 0-4.9-1.2-6.7-2.9" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-                </svg>
-              ) : (
-                <svg width="18" height="18" viewBox="0 0 24 24">
-                  <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-                  <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.6" />
-                </svg>
-              )}
-            </button>
-          </div>
-
-          <label className="label" htmlFor="pw2" style={{ marginTop: 10 }}>パスワード（確認）</label>
-          <div className="input-group">
-            <span className="input-icon" aria-hidden>
-              <svg width="18" height="18" viewBox="0 0 24 24">
-                <rect x="5" y="10" width="14" height="9" rx="2" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-                <path d="M8 10V8a4 4 0 0 1 8 0v2" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-              </svg>
-            </span>
-            <input
-              id="pw2"
-              type={showPw ? "text" : "password"}
-              placeholder="もう一度入力"
-              value={pw2}
-              onChange={(e) => setPw2(e.target.value)}
-              disabled={busy}
-              className="input"
-              required
-              minLength={8}
-              autoComplete="new-password"
-            />
-          </div>
-
           {okMsg && <div className="auth-alert ok" role="status">{okMsg}</div>}
           {msg && <div className="auth-alert err" role="alert">{msg}</div>}
 
           <button type="submit" className="btn btn-primary auth-submit" disabled={!canSubmit}>
-            {busy ? <span className="spinner" aria-hidden /> : <span>登録する</span>}
+            {busy ? <span className="spinner" aria-hidden /> : <span>メールを送信</span>}
           </button>
 
           <button

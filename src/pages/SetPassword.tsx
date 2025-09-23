@@ -1,3 +1,4 @@
+// src/pages/SetPassword.tsx
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
@@ -15,7 +16,7 @@ export default function SetPassword() {
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // 招待リンク(#type=invite) から来たセッションを待つ
+  // メールリンク（招待/サインインいずれでも）から来たセッションを待つ
   useEffect(() => {
     let mounted = true;
 
@@ -35,13 +36,14 @@ export default function SetPassword() {
     return () => { mounted = false; sub.subscription.unsubscribe(); };
   }, []);
 
-  const canSubmit = pw.length >= 8 && pw2.length >= 8 && pw === pw2 && !busy && sessionReady && hasSession;
+  const canSubmit =
+    pw.length >= 8 && pw2.length >= 8 && pw === pw2 && !busy && sessionReady && hasSession;
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setMsg(null); setOkMsg(null);
 
-    if (!hasSession) { setMsg("このページは招待メールのリンクから開いてください。"); return; }
+    if (!hasSession) { setMsg("このページはメールのリンクから開いてください。"); return; }
     if (pw.length < 8) { setMsg("パスワードは8文字以上で入力してください。"); return; }
     if (pw !== pw2) { setMsg("確認用パスワードが一致しません。"); return; }
 
@@ -50,13 +52,17 @@ export default function SetPassword() {
       const { error } = await supabase.auth.updateUser({ password: pw });
       if (error) { setMsg(`設定に失敗：${error.message}`); return; }
       setOkMsg("パスワードを設定しました。");
-      setTimeout(() => nav("/app", { replace: true }), 800);
+      // 余計な待機はせず即アプリへ
+      nav("/app", { replace: true });
     } catch (e: any) {
       setMsg(`設定に失敗：${e?.message ?? "不明なエラー"}`);
     } finally {
       setBusy(false);
     }
   };
+
+  // 既存ユーザー向け：後で設定して続行
+  const skip = () => nav("/app", { replace: true });
 
   return (
     <>
@@ -74,7 +80,7 @@ export default function SetPassword() {
           ) : !hasSession ? (
             <>
               <div className="auth-alert err" role="alert">
-                このページは<strong>招待メールのリンク</strong>から開いてください。
+                このページは<strong>メールのリンク</strong>から開いてください。
               </div>
               <div className="row" style={{ marginTop: 10 }}>
                 <button type="button" className="btn btn-secondary" onClick={() => nav("/login")}>ログインへ戻る</button>
@@ -100,6 +106,7 @@ export default function SetPassword() {
                   className="input"
                   required
                   minLength={8}
+                  autoComplete="new-password"
                 />
                 <button
                   type="button"
@@ -140,17 +147,24 @@ export default function SetPassword() {
                   className="input"
                   required
                   minLength={8}
+                  autoComplete="new-password"
                 />
               </div>
 
               {okMsg && <div className="auth-alert ok" role="status">{okMsg}</div>}
               {msg && <div className="auth-alert err" role="alert">{msg}</div>}
 
-              <button type="submit" className="btn btn-primary auth-submit" disabled={!canSubmit}>
-                {busy ? <span className="spinner" aria-hidden /> : <span>設定する</span>}
-              </button>
+              <div className="row" style={{ gap: 8 }}>
+                <button type="submit" className="btn btn-primary auth-submit" disabled={!canSubmit}>
+                  {busy ? <span className="spinner" aria-hidden /> : <span>設定する</span>}
+                </button>
+                {/* 既存ユーザーはここからスキップ可能 */}
+                <button type="button" className="btn btn-secondary auth-alt" onClick={skip} disabled={busy}>
+                  後で設定する
+                </button>
+              </div>
 
-              <button type="button" className="btn btn-secondary auth-alt" onClick={() => nav("/login")} disabled={busy}>
+              <button type="button" className="btn btn-text" onClick={() => nav("/login")} disabled={busy} style={{ marginTop: 8 }}>
                 ログインへ戻る
               </button>
             </>
