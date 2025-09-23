@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+// src/pages/Signup.tsx
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "../lib/supabase";
-import { isAllowedEmail, FRONT_ALLOWED } from "../utils/domain";
+import { isAllowedEmail } from "../utils/domain";
 
 export default function Signup() {
   const nav = useNavigate();
@@ -10,34 +10,63 @@ export default function Signup() {
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) nav("/app", { replace: true });
-    });
-  }, [nav]);
+  // 開発/本番で Functions の呼び先を出し分け
+  const fnUrl = useMemo(() => {
+    const useProxy = String(import.meta.env.VITE_USE_PROXY || "").toLowerCase() === "true";
+    const base = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+    if (import.meta.env.DEV && useProxy) return "/functions/v1/self-enroll";
+    if (base) return `${base}/functions/v1/self-enroll`;
+    return `${window.location.origin}/functions/v1/self-enroll`;
+  }, []);
+
+  // ★ 重要：既ログインでも /signup から自動遷移しない（オンボーディング導線のため）
+  // （従来の getSession→/app は削除）
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setMsg(null);
     setOkMsg(null);
 
+    // フロント側の簡易ドメインチェック（最終的なブロックは Edge Function 側で実施）
     if (!isAllowedEmail(email)) {
-      setMsg(
-        `許可されていないメールドメインです。${
-          FRONT_ALLOWED.length ? `（許可: ${FRONT_ALLOWED.join(", ")}）` : ""
-        }`
-      );
-      return; // ← ここで送信しない
+      setMsg("許可されていないメールドメインです。会社のメールアドレスで入力してください。");
+      return;
     }
 
     setBusy(true);
     try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: { emailRedirectTo: `${window.location.origin}/app` },
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      const isDirect = fnUrl.startsWith("http");
+      if (isDirect && import.meta.env.VITE_SUPABASE_ANON_KEY) {
+        headers["apikey"] = String(import.meta.env.VITE_SUPABASE_ANON_KEY);
+      }
+
+      const res = await fetch(fnUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ email }),
       });
-      if (error) { setMsg(`送信に失敗：${error.message}`); return; }
-      setOkMsg("ログイン用のリンクを送信しました。メールをご確認ください。");
+
+      const body: any = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        if (body?.error === "forbidden_domain") {
+          setMsg("許可されていないメールドメインです。会社のメールアドレスで入力してください。");
+        } else if (body?.error === "invalid_email") {
+          setMsg("メールアドレスの形式が正しくありません。");
+        } else if (res.status === 429) {
+          setMsg("送信が集中しています。しばらくしてからお試しください。");
+        } else {
+          setMsg(`送信に失敗しました。時間をおいて再度お試しください。${body?.detail ? `（${body.detail}）` : ""}`);
+        }
+        return;
+      }
+
+      if (body?.already_exists) {
+        setOkMsg("このメールは登録済みです。ログイン画面からログインしてください。");
+      } else {
+        setOkMsg("ログイン用のメールを送信しました。受信トレイをご確認ください。");
+      }
     } catch (e: any) {
       setMsg(`送信に失敗：${e?.message ?? "不明なエラー"}`);
     } finally {
@@ -54,14 +83,14 @@ export default function Signup() {
 
       <main className="auth-center">
         <form className="auth-card" onSubmit={onSubmit} aria-labelledby="signupTitle">
-          <h2 id="signupTitle" className="auth-card-title">新規登録 / 招待なしログイン</h2>
+          <h2 id="signupTitle" className="auth-card-title">会社メールで登録・ログイン</h2>
 
           <label className="label" htmlFor="email">メールアドレス</label>
           <div className="input-group">
             <span className="input-icon" aria-hidden>
               <svg width="18" height="18" viewBox="0 0 24 24">
-                <path d="M4 6h16v12H4z" fill="none" stroke="currentColor" strokeWidth="1.6"/>
-                <path d="M4 7l8 6 8-6" fill="none" stroke="currentColor" strokeWidth="1.6"/>
+                <path d="M4 6h16v12H4z" fill="none" stroke="currentColor" strokeWidth="1.6" />
+                <path d="M4 7l8 6 8-6" fill="none" stroke="currentColor" strokeWidth="1.6" />
               </svg>
             </span>
             <input
@@ -73,6 +102,8 @@ export default function Signup() {
               disabled={busy}
               className="input"
               required
+              autoComplete="email"
+              inputMode="email"
             />
           </div>
 

@@ -1,7 +1,6 @@
 // src/pages/Login.tsx
 import { useEffect, useState } from "react";
 import { useNavigate, useLocation, Link } from "react-router-dom";
-import { isAllowedEmail, FRONT_ALLOWED } from "../utils/domain";
 import { supabase } from "../lib/supabase";
 
 export default function Login() {
@@ -22,37 +21,15 @@ export default function Login() {
     }
   }, [reason]);
 
-  // 既ログイン → /app
+  // 既ログインなら /app へ（ここは残す：通常ログイン画面直アクセス時の体験）
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) nav("/app", { replace: true });
     });
   }, [nav]);
 
-  // コールバック種別に応じて遷移（URLハッシュ #access_token などをSupabaseが取り込む前提）
-  useEffect(() => {
-    const hash = window.location.hash || "";
-    const q = new URLSearchParams(hash.replace(/^#/, ""));
-    const type = q.get("type");
-
-    // パスワード再設定リンク
-    if (type === "recovery") {
-      nav("/reset-password", { replace: true });
-      return;
-    }
-    // サインアップ/マジックリンク/招待/メール変更はサインイン想定 → /app
-    if (type === "signup" || type === "magiclink" || type === "invite" || type === "email_change") {
-      nav("/app", { replace: true });
-      return;
-    }
-
-    // ランタイムの状態変化も拾う
-    const { data: sub } = supabase.auth.onAuthStateChange((event, _session) => {
-      if (event === "PASSWORD_RECOVERY") nav("/reset-password", { replace: true });
-      if (event === "SIGNED_IN") nav("/app", { replace: true });
-    });
-    return () => sub.subscription.unsubscribe();
-  }, [nav]);
+  // ★ 重要：メールリンクのハッシュ処理や SIGNED_IN 時の即遷移は /auth に一本化するため撤去
+  // （ここに onAuthStateChange で /app へ飛ばす処理は置かない）
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,31 +42,6 @@ export default function Login() {
       nav(from, { replace: true });
     } catch (e: any) {
       setMsg(`ログイン失敗：${e?.message ?? "不明なエラー"}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const sendReset = async () => {
-    setMsg(null);
-    if (!email) { setMsg("メールアドレスを入力してください"); return; }
-    if (!isAllowedEmail(email)) {
-      setMsg(
-        `許可されていないメールドメインです。${
-          FRONT_ALLOWED.length ? `（許可: ${FRONT_ALLOWED.join(", ")}）` : ""
-        }`
-      );
-      return; // ← ここで送信しない
-    }
-    setBusy(true);
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password`,
-      });
-      if (error) { setMsg(`再設定メールの送信に失敗：${error.message}`); return; }
-      setMsg("再設定メールを送信しました。");
-    } catch (e: any) {
-      setMsg(`送信失敗：${e?.message ?? "不明なエラー"}`);
     } finally {
       setBusy(false);
     }
@@ -125,6 +77,8 @@ export default function Login() {
               disabled={busy}
               className="input"
               required
+              autoComplete="email"
+              inputMode="email"
             />
           </div>
 
@@ -146,6 +100,8 @@ export default function Login() {
               className="input"
               required
               minLength={8}
+              autoComplete="current-password"
+              inputMode="text"
             />
             <button
               type="button"
@@ -178,15 +134,14 @@ export default function Login() {
             {busy ? <span className="spinner" aria-hidden /> : <span>ログイン</span>}
           </button>
 
-          <button
-            type="button"
+          {/* 別画面（メール送信フォーム）へ遷移 */}
+          <Link
+            to="/forgot-password"
             className="btn btn-secondary auth-alt"
-            onClick={sendReset}
-            disabled={busy}
-            title="入力したメールアドレス宛に再設定用リンクを送信します"
+            title="再設定用リンクをメールで受け取る"
           >
             パスワードをお忘れの方
-          </button>
+          </Link>
 
           <div style={{ marginTop: 8, textAlign: 'center', fontSize: 13 }}>
             アカウントをお持ちでない方は{" "}

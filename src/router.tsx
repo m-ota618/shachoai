@@ -5,6 +5,8 @@ import { supabase } from "./lib/supabase";
 import Login from "./pages/Login";
 import ResetPassword from "./pages/ResetPassword";
 import Signup from "./pages/Signup";
+import ForgotPassword from "./pages/ForgotPassword";
+import AuthCallback from "./pages/AuthCallback";
 import App from "./App";
 
 // フロント用 許可ドメイン（空ならフロント側ガードは無効＝サーバ側だけで制御）
@@ -14,12 +16,12 @@ const FRONT_ALLOWED = String(import.meta.env.VITE_ALLOWED_EMAIL_DOMAINS || "")
   .filter(Boolean);
 
 function isAllowedDomain(email: string): boolean {
-  if (!FRONT_ALLOWED.length) return true; // 未設定なら通す（最終的にはAPI側が403で止める）
+  if (!FRONT_ALLOWED.length) return true;
   const d = email.toLowerCase().split("@")[1] || "";
   return FRONT_ALLOWED.some((dom) => d === dom || d.endsWith("." + dom));
 }
 
-// 認証＋ドメインガード
+// 認証＋ドメインガード（/app など保護ルート専用）
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
@@ -30,13 +32,11 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     let mounted = true;
 
     async function init() {
-      // 1) セッション有無
       const { data } = await supabase.auth.getSession();
       const has = !!data.session;
       if (!mounted) return;
       setSignedIn(has);
 
-      // 2) ドメイン判定（サインイン済みのときだけ）
       if (has) {
         const { data: u } = await supabase.auth.getUser();
         const email = u.user?.email || "";
@@ -50,7 +50,6 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 
     init();
 
-    // 状態変化も追う
     const { data: sub } = supabase.auth.onAuthStateChange(async (_e, session) => {
       if (!mounted) return;
       const has = !!session;
@@ -74,7 +73,6 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   // 禁止ユーザーはサインアウトして /login へ
   useEffect(() => {
     if (!ready || !forbidden) return;
-    // サインアウトは非同期だが、即座に遷移させる
     supabase.auth.signOut().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, forbidden]);
@@ -87,8 +85,6 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     );
   }
   if (!signedIn) return <Navigate to="/login" replace state={{ from: loc }} />;
-
-  // ドメイン不一致は /login へ（理由付き）
   if (forbidden) return <Navigate to="/login" replace state={{ reason: "forbidden_domain" }} />;
 
   return <>{children}</>;
@@ -97,9 +93,14 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 export default function Router() {
   return (
     <Routes>
+      {/* 公開ルート */}
       <Route path="/login" element={<Login />} />
       <Route path="/signup" element={<Signup />} />
+      <Route path="/auth" element={<AuthCallback />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+
+      {/* 保護ルート */}
       <Route
         path="/app"
         element={
@@ -108,6 +109,8 @@ export default function Router() {
           </RequireAuth>
         }
       />
+
+      {/* デフォルト */}
       <Route path="*" element={<Navigate to="/app" replace />} />
     </Routes>
   );
