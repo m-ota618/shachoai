@@ -28,21 +28,20 @@ const AUTH_REDIRECT_TO =
   Deno.env.get("AUTH_REDIRECT_TO") ||
   `${Deno.env.get("SITE_URL")}/auth`;
 
-// ★ 反映（reflect）型のCORSヘッダ: SDKが付ける x-client-info 等を自動許可
-function corsHeaders(origin: string | null, req: Request) {
+// ★最小修正：固定許可（x-client-info を明示）
+function corsHeaders(origin: string | null) {
   const allow = origin && (CORS.length === 0 || CORS.includes(origin));
-  const requestedHeaders = req.headers.get("Access-Control-Request-Headers") || "";
-  const h: Record<string, string> = {
-    Vary: "Origin, Access-Control-Request-Headers",
-  };
+  const h: Record<string, string> = { Vary: "Origin" };
   if (allow) {
     h["Access-Control-Allow-Origin"] = origin!;
     h["Access-Control-Allow-Methods"] = "POST, OPTIONS";
+    // ↓ ここを固定で十分長めに。大文字小文字は無視されますが両方入れてもOK
     h["Access-Control-Allow-Headers"] =
-      requestedHeaders || "authorization, apikey, content-type, x-client-info";
+      "Content-Type, Authorization, apikey, X-Client-Info, x-client-info";
   }
   return h;
 }
+
 
 const normalize = (s: string) => (s || "").trim().toLowerCase();
 const domainMatches = (cand: string, base: string, allowSub: boolean) =>
