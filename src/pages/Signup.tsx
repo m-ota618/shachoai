@@ -21,32 +21,40 @@ export default function Signup() {
     e.preventDefault();
     setMsg(null);
     setOkMsg(null);
-    setBusy(true);
 
+    const mail = email.trim().toLowerCase();
+    if (!mail.includes("@")) {
+      setMsg("メールアドレスの形式が正しくありません。");
+      return;
+    }
+
+    setBusy(true);
     try {
-      // 1) Edge Function に渡して、許可ドメインなら
-      //    - 未登録: 招待メール（/set-password）
-      //    - 既存: マジックリンク（/auth）
-      //    を送ってもらう（登録有無は UI に出さない）
-      const res = await fetch("/functions/v1/self-enroll", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+      // Edge Function: self-enroll を呼び出し（CORS/ヘッダ問題を回避）
+      const { data, error } = await supabase.functions.invoke("self-enroll", {
+        body: { email: mail },
       });
 
-      if (!res.ok) {
-        // 許可外ドメインのみ明示、それ以外は統一メッセージ
-        if (res.status === 403) {
+      if (error) {
+        console.error("self-enroll error:", error);
+        if (error.status === 403) {
           setMsg("このドメインのメールアドレスは登録できません。会社のメールアドレスで入力してください。");
+        } else if (/redirect/i.test(error.message)) {
+          setMsg("リダイレクトURLが許可されていません。管理者にお問い合わせください。");
+        } else if (/Email provider is disabled/i.test(error.message) || /email_disabled/i.test(error.message)) {
+          setMsg("メール送信が無効になっています。しばらくしてからお試しください。");
+        } else if (/missing_env/i.test(error.message)) {
+          setMsg("サーバー設定に問題があります。しばらくしてからお試しください。");
+        } else if (/domain_table_empty|db_error/i.test(error.message)) {
+          setMsg("現在新規登録を受け付けていません。しばらくしてからお試しください。");
         } else {
           setMsg("処理に失敗しました。時間をおいて再度お試しください。");
         }
         return;
       }
 
-      // 2) 案内は常に同一メッセージ（列挙対策）
+      // 成功時は常に同一メッセージ（登録有無は表示しない）
       setOkMsg("入力されたメールアドレス宛に案内メールを送信しました。届かない場合は迷惑メールをご確認ください。");
-      // 画面遷移は行わず、ユーザーがメール内リンクから /auth へ戻る
     } catch {
       setMsg("通信エラーが発生しました。時間をおいて再度お試しください。");
     } finally {
