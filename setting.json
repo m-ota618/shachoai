@@ -1,6 +1,19 @@
 {
+  
   "deno.enable": true,
+  "deno.enablePaths": ["supabase/functions"],
+
+ 
+  "deno.config": "supabase/functions/deno.json",
+
   "deno.unstable": true,
   "deno.lint": true,
-  "deno.enablePaths": ["supabase/functions"]  
+
+  
+  "deno.suggest.imports.hosts": {
+    "https://esm.sh": true
+  },
+
+  
+  "typescript.tsserver.useSeparateSyntaxServer": false
 }

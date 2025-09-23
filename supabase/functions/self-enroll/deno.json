@@ -1,3 +1,5 @@
 {
-  "imports": {}
+  "compilerOptions": {
+    "lib": ["deno.ns", "deno.window", "dom"]
+  }
 }
