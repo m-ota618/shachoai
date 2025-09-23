@@ -10,9 +10,8 @@ export default function Signup() {
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // 既ログインでも /signup から自動遷移しない（オンボーディングのため）
   useEffect(() => {
-    // 何もしない
+    // 自動遷移しない
   }, []);
 
   const canSubmit = !!email && !busy;
@@ -30,30 +29,37 @@ export default function Signup() {
 
     setBusy(true);
     try {
-      // Edge Function: self-enroll を呼び出し（CORS/ヘッダ問題を回避）
-      const { data, error } = await supabase.functions.invoke("self-enroll", {
-        body: { email: mail },
+      // 1) 許可ドメインチェックのみ
+      const { error: checkErr } = await supabase.functions.invoke("self-enroll", {
+        body: { email: mail, checkOnly: true },
       });
-
-      if (error) {
-        console.error("self-enroll error:", error);
-        if (error.status === 403) {
+      if (checkErr) {
+        if (checkErr.status === 403) {
           setMsg("このドメインのメールアドレスは登録できません。会社のメールアドレスで入力してください。");
-        } else if (/redirect/i.test(error.message)) {
-          setMsg("リダイレクトURLが許可されていません。管理者にお問い合わせください。");
-        } else if (/Email provider is disabled/i.test(error.message) || /email_disabled/i.test(error.message)) {
-          setMsg("メール送信が無効になっています。しばらくしてからお試しください。");
-        } else if (/missing_env/i.test(error.message)) {
-          setMsg("サーバー設定に問題があります。しばらくしてからお試しください。");
-        } else if (/domain_table_empty|db_error/i.test(error.message)) {
-          setMsg("現在新規登録を受け付けていません。しばらくしてからお試しください。");
         } else {
           setMsg("処理に失敗しました。時間をおいて再度お試しください。");
         }
         return;
       }
 
-      // 成功時は常に同一メッセージ（登録有無は表示しない）
+      // 2) OTPマジックリンクを送信
+      const { error } = await supabase.auth.signInWithOtp({
+        email: mail,
+        options: {
+          shouldCreateUser: true,
+          emailRedirectTo: `${window.location.origin}/auth#type=signup`,
+        },
+      });
+      if (error) {
+        if (/Email provider is disabled/i.test(error.message)) {
+          setMsg("メール送信が無効になっています。管理者にお問い合わせください。");
+        } else {
+          setMsg("処理に失敗しました。時間をおいて再度お試しください。");
+        }
+        return;
+      }
+
+      // 3) 成功メッセージは常に同じ
       setOkMsg("入力されたメールアドレス宛に案内メールを送信しました。届かない場合は迷惑メールをご確認ください。");
     } catch {
       setMsg("通信エラーが発生しました。時間をおいて再度お試しください。");
