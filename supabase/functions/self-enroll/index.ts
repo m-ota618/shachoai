@@ -58,7 +58,7 @@ Deno.serve(async (req) => {
 
     // 1) 許可ドメインの確認
     const { data: domains, error: domErr } = await supaAdmin
-      .from("org_domains")
+      .from("signup_allowed_domains")
       .select("org_id, domain, allow_subdomains");
     if (domErr) {
       return new Response(JSON.stringify({ error: "server_error" }), { status: 500, headers: baseHeaders });
