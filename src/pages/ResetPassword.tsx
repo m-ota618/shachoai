@@ -24,7 +24,6 @@ export default function ResetPassword() {
   useEffect(() => {
     let mounted = true;
 
-    // すでに処理されていればそのまま取得
     const check = async () => {
       const { data } = await supabase.auth.getSession();
       if (!mounted) return;
@@ -33,7 +32,6 @@ export default function ResetPassword() {
     };
     check();
 
-    // 万一遅延する場合に備えてサブスクライブ
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
       if (!mounted) return;
       setHasSession(!!s);
@@ -89,6 +87,19 @@ export default function ResetPassword() {
     }
   };
 
+  // ★「ログインへ戻る」は、リカバリ用セッションを明示的に破棄してから戻す
+  const backToLogin = async () => {
+    setBusy(true);
+    try {
+      await supabase.auth.signOut(); // ← これがポイント
+    } catch {
+      // noop（失敗しても続行）
+    } finally {
+      setBusy(false);
+      nav("/login", { replace: true });
+    }
+  };
+
   return (
     <>
       {/* アプリと共通の固定ヘッダ */}
@@ -114,7 +125,8 @@ export default function ResetPassword() {
                 <button
                   type="button"
                   className="btn btn-secondary"
-                  onClick={() => nav("/login")}
+                  onClick={backToLogin}
+                  disabled={busy}
                 >
                   ログインへ戻る
                 </button>
@@ -140,6 +152,7 @@ export default function ResetPassword() {
                   className="input"
                   required
                   minLength={8}
+                  autoComplete="new-password"
                 />
                 <button
                   type="button"
@@ -180,6 +193,7 @@ export default function ResetPassword() {
                   className="input"
                   required
                   minLength={8}
+                  autoComplete="new-password"
                 />
               </div>
 
@@ -198,7 +212,7 @@ export default function ResetPassword() {
               <button
                 type="button"
                 className="btn btn-secondary auth-alt"
-                onClick={() => nav("/login")}
+                onClick={backToLogin} // ← サインアウトしてから戻る
                 disabled={busy}
               >
                 ログインへ戻る

@@ -3,6 +3,15 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { isAllowedEmail } from "../utils/domain";
 
+/**
+ * 会社メールでの登録/ログイン（自己登録）
+ * - 本番: Supabase Edge Function を絶対URLで呼ぶ（CORS前提）
+ * - 開発: Vite dev のプロキシ（/functions/v1/*）を使うことも可能
+ *
+ * NOTE:
+ * - 許可ドメインの最終判定はバックエンド（self-enroll）側。フロントの isAllowedEmail はUX向上用。
+ * - テスト目的で `gmail.com` を DB に入れてもOK。テスト完了後は org_domains から削除すれば本番に影響なし。
+ */
 export default function Signup() {
   const nav = useNavigate();
   const [email, setEmail] = useState("");
@@ -10,24 +19,34 @@ export default function Signup() {
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // 開発/本番で Functions の呼び先を出し分け
+  // Functions の呼び先を環境に応じて決定
+  // 優先度: VITE_FUNCTIONS_BASE > (dev かつ VITE_USE_PROXY=true) > VITE_SUPABASE_URL の /functions/v1
   const fnUrl = useMemo(() => {
+    const baseFromEnv = String(import.meta.env.VITE_FUNCTIONS_BASE || "").trim(); // 例: https://xxxx.functions.supabase.co
+    if (baseFromEnv) return `${baseFromEnv.replace(/\/$/, "")}/self-enroll`;
+
     const useProxy = String(import.meta.env.VITE_USE_PROXY || "").toLowerCase() === "true";
-    const base = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-    if (import.meta.env.DEV && useProxy) return "/functions/v1/self-enroll";
-    if (base) return `${base}/functions/v1/self-enroll`;
+    if (import.meta.env.DEV && useProxy) {
+      // vite.config.ts 側で /functions/v1 → Supabase Functions にプロキシしている前提
+      return "/functions/v1/self-enroll";
+    }
+
+    const supaBase = String(import.meta.env.VITE_SUPABASE_URL || "").replace(/\/$/, "");
+    if (supaBase) return `${supaBase}/functions/v1/self-enroll`;
+
+    // 最後の保険（同一オリジンに関数がある構成向け。通常は使わない想定）
     return `${window.location.origin}/functions/v1/self-enroll`;
   }, []);
 
-  // ★ 重要：既ログインでも /signup から自動遷移しない（オンボーディング導線のため）
-  // （従来の getSession→/app は削除）
+  // 既ログインでも /signup からは自動遷移しない（オンボーディング導線維持）
+  // 以前の getSession→/app は削除
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setMsg(null);
     setOkMsg(null);
 
-    // フロント側の簡易ドメインチェック（最終的なブロックは Edge Function 側で実施）
+    // UX向けの簡易チェック（本番の最終ブロックは Edge Function）
     if (!isAllowedEmail(email)) {
       setMsg("許可されていないメールドメインです。会社のメールアドレスで入力してください。");
       return;
@@ -35,19 +54,26 @@ export default function Signup() {
 
     setBusy(true);
     try {
+      // CORS安定化のため、余計なヘッダは送らない（apikeyは付けない）
       const headers: Record<string, string> = { "content-type": "application/json" };
-      const isDirect = fnUrl.startsWith("http");
-      if (isDirect && import.meta.env.VITE_SUPABASE_ANON_KEY) {
-        headers["apikey"] = String(import.meta.env.VITE_SUPABASE_ANON_KEY);
-      }
+
+      // ネットワークが詰まってもUIが返ってくるように AbortController でタイムアウトを付与
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), 15000); // 15s タイムアウト
 
       const res = await fetch(fnUrl, {
         method: "POST",
         headers,
         body: JSON.stringify({ email }),
-      });
+        credentials: "omit",
+        signal: ac.signal,
+        mode: "cors",
+      }).finally(() => clearTimeout(t));
 
-      const body: any = await res.json().catch(() => ({}));
+      // CORS失敗などでレスポンスが取れないときに備えて一旦安全にparse
+      const text = await res.text();
+      let body: any = {};
+      try { body = text ? JSON.parse(text) : {}; } catch {}
 
       if (!res.ok) {
         if (body?.error === "forbidden_domain") {
@@ -56,6 +82,8 @@ export default function Signup() {
           setMsg("メールアドレスの形式が正しくありません。");
         } else if (res.status === 429) {
           setMsg("送信が集中しています。しばらくしてからお試しください。");
+        } else if (res.status === 401 || res.status === 403) {
+          setMsg("送信に失敗しました。アクセスが許可されていません。（管理者にお問い合わせください）");
         } else {
           setMsg(`送信に失敗しました。時間をおいて再度お試しください。${body?.detail ? `（${body.detail}）` : ""}`);
         }
@@ -67,8 +95,13 @@ export default function Signup() {
       } else {
         setOkMsg("ログイン用のメールを送信しました。受信トレイをご確認ください。");
       }
-    } catch (e: any) {
-      setMsg(`送信に失敗：${e?.message ?? "不明なエラー"}`);
+    } catch (err: any) {
+      // fetch自体が投げた場合（CORS/ネットワーク/タイムアウト）
+      if (err?.name === "AbortError") {
+        setMsg("送信に時間がかかっています。ネットワーク環境を確認して再度お試しください。");
+      } else {
+        setMsg(`送信に失敗：${err?.message ?? "ネットワークエラー"}`);
+      }
     } finally {
       setBusy(false);
     }
@@ -85,7 +118,7 @@ export default function Signup() {
         <form className="auth-card" onSubmit={onSubmit} aria-labelledby="signupTitle">
           <h2 id="signupTitle" className="auth-card-title">会社メールで登録・ログイン</h2>
 
-          <label className="label" htmlFor="email">メールアドレス</label>
+        <label className="label" htmlFor="email">メールアドレス</label>
           <div className="input-group">
             <span className="input-icon" aria-hidden>
               <svg width="18" height="18" viewBox="0 0 24 24">

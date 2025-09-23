@@ -1,39 +1,45 @@
 // src/pages/AuthCallback.tsx
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
 /**
  * メールリンク（magiclink / signup / invite / email_change / recovery）の着地点。
- * URLハッシュ(#access_token&type=...)の取り込みを待ってから、適切なページに遷移する。
- * - type=recovery は /reset-password へ即遷移
- * - 上記以外は、セッションが確立したら /app へ
+ * - 初期レンダーで URLハッシュ(#...) を先取りしてから判定（Supabase が消す前に確保）
+ * - type=recovery は /reset-password へ即遷移（セッション有無より優先）
+ * - それ以外は、セッションが確立したら /app（または next）へ
  */
 export default function AuthCallback() {
   const nav = useNavigate();
   const loc = useLocation();
-  const [msg, setMsg] = useState<string>("認証処理を実行しています…");
+  const [msg, setMsg] = useState("認証処理を実行しています…");
+
+  // ★ ここが重要：初期レンダー時に“同期的”にハッシュを奪取
+  const initial = useMemo(() => {
+    const hash = typeof window !== "undefined" ? (window.location.hash || "") : "";
+    const q = new URLSearchParams(hash.replace(/^#/, ""));
+    return {
+      hash,
+      type: q.get("type"), // "recovery" | "magiclink" | "signup" | ...
+    };
+  }, []); // ← 初期化時の一度きり
 
   useEffect(() => {
     let alive = true;
 
-    const hash = window.location.hash || "";
-    const q = new URLSearchParams(hash.replace(/^#/, ""));
-    const type = q.get("type"); // recovery | magiclink | signup | invite | email_change ...
-
-    // recovery はそのまま再設定画面へ
-    if (type === "recovery") {
+    // 1) recovery は最優先で /reset-password に飛ばす
+    if (initial.type === "recovery") {
       nav("/reset-password", { replace: true });
       return;
     }
 
-    const proceed = async () => {
-      // まず即時にセッションを確認
+    // 2) それ以外（magiclink / signup / invite / email_change など）
+    const run = async () => {
+      const next = new URLSearchParams(window.location.search).get("next") || "/app";
+
+      // まず即時にセッション確認
       const { data } = await supabase.auth.getSession();
       if (!alive) return;
-
-      // next=? があれば優先（なければ /app）
-      const next = new URLSearchParams(window.location.search).get("next") || "/app";
 
       if (data.session) {
         nav(next, { replace: true });
@@ -58,10 +64,10 @@ export default function AuthCallback() {
       };
     };
 
-    proceed();
+    run();
 
     return () => { alive = false; };
-  }, [nav, loc]);
+  }, [initial.type, nav, loc]);
 
   return (
     <>
@@ -72,7 +78,7 @@ export default function AuthCallback() {
       <main className="auth-center">
         <div className="auth-card" aria-live="polite">
           <h2 className="auth-card-title">ログイン処理中</h2>
-          <div className="skeleton">{msg}</div>
+        <div className="skeleton">{msg}</div>
         </div>
       </main>
     </>
