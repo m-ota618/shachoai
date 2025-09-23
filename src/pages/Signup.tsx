@@ -10,8 +10,9 @@ export default function Signup() {
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // 既ログインでも /signup から自動遷移しない（オンボーディングのため）
   useEffect(() => {
-    // 自動遷移しない
+    // 何もしない
   }, []);
 
   const canSubmit = !!email && !busy;
@@ -29,20 +30,7 @@ export default function Signup() {
 
     setBusy(true);
     try {
-      // 1) 許可ドメインチェックのみ
-      const { error: checkErr } = await supabase.functions.invoke("self-enroll", {
-        body: { email: mail, checkOnly: true },
-      });
-      if (checkErr) {
-        if (checkErr.status === 403) {
-          setMsg("このドメインのメールアドレスは登録できません。会社のメールアドレスで入力してください。");
-        } else {
-          setMsg("処理に失敗しました。時間をおいて再度お試しください。");
-        }
-        return;
-      }
-
-      // 2) OTPマジックリンクを送信
+      // ★ Supabase Auth に直接依頼（未登録なら作成、/auth に戻す）
       const { error } = await supabase.auth.signInWithOtp({
         email: mail,
         options: {
@@ -50,16 +38,23 @@ export default function Signup() {
           emailRedirectTo: `${window.location.origin}/auth#type=signup`,
         },
       });
+
       if (error) {
-        if (/Email provider is disabled/i.test(error.message)) {
+        // エラーメッセージは過度に詳細にしない（列挙対策を維持）
+        const m = String(error.message || "");
+        if (/Email provider is disabled/i.test(m)) {
           setMsg("メール送信が無効になっています。管理者にお問い合わせください。");
+        } else if (/redirect/i.test(m)) {
+          setMsg("リダイレクトURLが許可されていません。管理者にお問い合わせください。");
+        } else if (/signups/i.test(m)) {
+          setMsg("現在新規登録は受け付けていません。管理者にお問い合わせください。");
         } else {
           setMsg("処理に失敗しました。時間をおいて再度お試しください。");
         }
         return;
       }
 
-      // 3) 成功メッセージは常に同じ
+      // 成功時は常に同一メッセージ（列挙対策）
       setOkMsg("入力されたメールアドレス宛に案内メールを送信しました。届かない場合は迷惑メールをご確認ください。");
     } catch {
       setMsg("通信エラーが発生しました。時間をおいて再度お試しください。");
