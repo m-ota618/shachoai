@@ -35,7 +35,7 @@ export default function Signup() {
         email: mail,
         options: {
           shouldCreateUser: true,
-          emailRedirectTo: `${window.location.origin}/auth#type=signup`,
+          emailRedirectTo: `${window.location.origin}/auth`,
         },
       });
 
