@@ -7,6 +7,7 @@ import ResetPassword from "./pages/ResetPassword";
 import Signup from "./pages/Signup";
 import ForgotPassword from "./pages/ForgotPassword";
 import AuthCallback from "./pages/AuthCallback";
+import SetPassword from "./pages/SetPassword"; // ★ 追加
 import App from "./App";
 
 // フロント用 許可ドメイン（空ならフロント側ガードは無効＝サーバ側だけで制御）
@@ -96,9 +97,12 @@ export default function Router() {
       {/* 公開ルート */}
       <Route path="/login" element={<Login />} />
       <Route path="/signup" element={<Signup />} />
+      {/* メールリンクの着地（ハッシュ #type=... を拾って内部で分岐 → /set-password 等へ） */}
       <Route path="/auth" element={<AuthCallback />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      {/* ★ 招待/サインアップ完了後の初回パスワード設定 */}
+      <Route path="/set-password" element={<SetPassword />} />
 
       {/* 保護ルート */}
       <Route

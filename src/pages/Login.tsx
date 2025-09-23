@@ -21,15 +21,44 @@ export default function Login() {
     }
   }, [reason]);
 
-  // 既ログインなら /app へ（ここは残す：通常ログイン画面直アクセス時の体験）
+  // 既ログイン → /app
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) nav("/app", { replace: true });
     });
   }, [nav]);
 
-  // ★ 重要：メールリンクのハッシュ処理や SIGNED_IN 時の即遷移は /auth に一本化するため撤去
-  // （ここに onAuthStateChange で /app へ飛ばす処理は置かない）
+  // コールバック種別に応じて遷移（URLハッシュ #access_token などをSupabaseが取り込む前提）
+  useEffect(() => {
+    const hash = window.location.hash || "";
+    const q = new URLSearchParams(hash.replace(/^#/, ""));
+    const type = q.get("type");
+
+    // パスワード再設定リンク
+    if (type === "recovery") {
+      nav("/reset-password", { replace: true });
+      return;
+    }
+
+    // ★ 招待/サインアップは初回パスワード設定へ
+    if (type === "signup" || type === "invite") {
+      nav("/set-password", { replace: true });
+      return;
+    }
+
+    // マジックリンク/メール変更はサインイン想定 → /app
+    if (type === "magiclink" || type === "email_change") {
+      nav("/app", { replace: true });
+      return;
+    }
+
+    // ランタイムの状態変化も拾う
+    const { data: sub } = supabase.auth.onAuthStateChange((event, _session) => {
+      if (event === "PASSWORD_RECOVERY") nav("/reset-password", { replace: true });
+      if (event === "SIGNED_IN") nav("/app", { replace: true });
+    });
+    return () => sub.subscription.unsubscribe();
+  }, [nav]);
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -134,7 +163,7 @@ export default function Login() {
             {busy ? <span className="spinner" aria-hidden /> : <span>ログイン</span>}
           </button>
 
-          {/* 別画面（メール送信フォーム）へ遷移 */}
+          {/* 別画面で再設定 */}
           <Link
             to="/forgot-password"
             className="btn btn-secondary auth-alt"
