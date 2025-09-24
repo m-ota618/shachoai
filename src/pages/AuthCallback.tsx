@@ -1,90 +1,111 @@
-// src/pages/AuthCallback.tsx
-import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
 /**
- * メールリンク（magiclink / signup / invite / email_change / recovery）の着地点。
- * - 初回レンダーで URL ハッシュ(#...) を確保（Supabase が消す前に読む）
- * - type=recovery は最優先で /reset-password へ
- * - type=signup | magiclink は /set-password へ
- * - 上記以外（invite / email_change など）はセッション確立後に /app（または ?next=）へ
+ * メールリンク着地のハンドラ。
+ * - ?code=... が来たら exchangeCodeForSession でセッション確立
+ * - #type=recovery は /reset-password に委譲
+ * - #type=signup|magiclink|email_change はセッション確立を待って /login へ
+ * - タイムアウト時はメッセージを出して /login へ誘導
  */
 export default function AuthCallback() {
   const nav = useNavigate();
   const loc = useLocation();
-  const [msg, setMsg] = useState("認証処理を実行しています…");
-
-  // 初期レンダー時にハッシュを奪取（同期的に）
-  const initial = useMemo(() => {
-    const hash = typeof window !== "undefined" ? (window.location.hash || "") : "";
-    const q = new URLSearchParams(hash.replace(/^#/, ""));
-    return {
-      hash,
-      type: q.get("type"), // "recovery" | "magiclink" | "signup" | "invite" | "email_change" | ...
-    };
-  }, []);
+  const [msg, setMsg] = useState("ログイン処理中…");
+  const alive = useRef(true);
 
   useEffect(() => {
-    let alive = true;
+    alive.current = true;
 
-    // 1) recovery は無条件で /reset-password へ（セッション有無より優先）
-    if (initial.type === "recovery") {
-      nav("/reset-password", { replace: true });
-      return;
-    }
-
-    // 2) signup / magiclink は初回パスワード設定へ、それ以外は /app（?next= 優先）
-    const wantsSetPassword = initial.type === "signup" || initial.type === "magiclink";
     const run = async () => {
-      const search = new URLSearchParams(window.location.search);
-      const next = search.get("next") || "/app";
-      const dest = wantsSetPassword ? "/set-password" : next;
+      try {
+        // 1) パラメータ取得
+        const url = new URL(window.location.href);
+        const hash = new URLSearchParams(url.hash.replace(/^#/, ""));
+        const qs = url.searchParams;
 
-      // 即時セッション確認
-      const { data } = await supabase.auth.getSession();
-      if (!alive) return;
+        const flow = qs.get("flow") || "";          // e.g. signup / magic
+        const type = hash.get("type") || "";        // e.g. signup / recovery / magiclink / email_change
+        const hasCode = !!qs.get("code");           // query型リンク
+        const hasAccessToken = !!hash.get("access_token"); // hash型リンク
 
-      if (data.session) {
-        nav(dest, { replace: true });
-        return;
+        // 2) パスワード再設定は専用画面へ委譲
+        if (type === "recovery" || flow === "recovery") {
+          // 元のハッシュも渡す（#type=recovery, access_token など）
+          nav(`/reset-password?flow=recovery${window.location.hash}`, { replace: true });
+          return;
+        }
+
+        // 3) code 型（?code=...）なら Supabase に処理させる
+        if (hasCode) {
+          setMsg("セッションを確立しています…");
+          // v2: 現在のURLを渡すだけでOK（内部で code を取り込み）
+          const { data, error } = await supabase.auth.exchangeCodeForSession(window.location.href);
+          if (error) {
+            setMsg(`セッション確立に失敗しました：${error.message}`);
+            // 失敗してもログインへ誘導
+            setTimeout(() => nav("/login", { replace: true }), 1200);
+            return;
+          }
+          // 成功 → ログインへ
+          setMsg("メール確認が完了しました。ログインしてください。");
+          setTimeout(() => nav("/login", { replace: true }), 600);
+          return;
+        }
+
+        // 4) hash 型（#access_token=...）は SDK が取り込むのを待つ
+        if (hasAccessToken || type === "signup" || flow === "signup" || type === "magiclink" || type === "email_change") {
+          setMsg("セッションを確立しています…");
+
+          // onAuthStateChange で SIGNED_IN を待つ + フェイルセーフでポーリング
+          const stopAt = Date.now() + 8000; // 最大8秒待機
+          const unsub = supabase.auth.onAuthStateChange((_e, session) => {
+            if (!alive.current) return;
+            if (session) {
+              unsub.data.subscription.unsubscribe();
+              setMsg("メール確認が完了しました。ログインしてください。");
+              setTimeout(() => nav("/login", { replace: true }), 400);
+            }
+          });
+
+          // フェイルセーフ：ポーリングでも確認
+          while (Date.now() < stopAt) {
+            const { data } = await supabase.auth.getSession();
+            if (!alive.current) return;
+            if (data.session) {
+              unsub.data.subscription.unsubscribe();
+              setMsg("メール確認が完了しました。ログインしてください。");
+              setTimeout(() => nav("/login", { replace: true }), 400);
+              return;
+            }
+            await new Promise((r) => setTimeout(r, 400));
+          }
+
+          // タイムアウト
+          unsub.data.subscription.unsubscribe();
+          setMsg("認証に時間がかかっています。リンクをもう一度開くか、ページを再読み込みしてください。");
+          return;
+        }
+
+        // 5) どの形式でもない → ログインへ
+        setMsg("不明なリンクです。ログイン画面へ戻ります。");
+        setTimeout(() => nav("/login", { replace: true }), 800);
+      } catch (e: any) {
+        setMsg(`エラーが発生しました：${e?.message ?? "不明なエラー"}`);
+        setTimeout(() => nav("/login", { replace: true }), 1200);
       }
-
-      // 遅延に備えて onAuthStateChange を待機
-      const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-        if (!alive) return;
-        if (session) nav(dest, { replace: true });
-      });
-
-      // タイムアウト保険（UI 文言のみ）
-      const timeout = setTimeout(() => {
-        if (!alive) return;
-        setMsg("認証に時間がかかっています。メールのリンクをもう一度開くか、ページを再読み込みしてください。");
-      }, 8000);
-
-      return () => {
-        clearTimeout(timeout);
-        sub.subscription.unsubscribe();
-      };
     };
 
     run();
-    return () => { alive = false; };
-  }, [initial.type, nav, loc]);
+    return () => { alive.current = false; };
+  }, [loc, nav]);
 
   return (
-    <>
-      <header className="app-header" role="banner">
-        <img src="/planter-lockup.svg" alt="Planter" className="brand-lockup" />
-        <div className="app-header-divider" />
-      </header>
-      <main className="auth-center">
-        <div className="auth-card" aria-live="polite">
-          <h2 className="auth-card-title">ログイン処理中</h2>
-          <div className="skeleton">{msg}</div>
-        </div>
-      </main>
-    </>
+    <main className="content">
+      <div className="wrap">
+        <div className="skeleton">{msg}</div>
+      </div>
+    </main>
   );
 }
-
