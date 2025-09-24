@@ -6,6 +6,8 @@ import { supabase } from "../lib/supabase";
 export default function Signup() {
   const nav = useNavigate();
   const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -15,7 +17,7 @@ export default function Signup() {
     // 何もしない
   }, []);
 
-  const canSubmit = !!email && !busy;
+  const canSubmit = !!email && !!pw && !!pw2 && !busy;
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,37 +29,42 @@ export default function Signup() {
       setMsg("メールアドレスの形式が正しくありません。");
       return;
     }
+    if (pw.length < 8) {
+      setMsg("パスワードは8文字以上で入力してください。");
+      return;
+    }
+    if (pw !== pw2) {
+      setMsg("パスワードが一致しません。");
+      return;
+    }
 
     setBusy(true);
     try {
-      // ★ Supabase Auth に直接依頼（未登録なら作成、/auth に戻す）
-      const { error } = await supabase.auth.signInWithOtp({
+      // ★ Supabase JS v2: signUp は引数1つ（options 内に emailRedirectTo）
+      const { error } = await supabase.auth.signUp({
         email: mail,
+        password: pw,
         options: {
-          shouldCreateUser: true,
-          emailRedirectTo: `${window.location.origin}/auth`,
+          emailRedirectTo: `${window.location.origin}/auth?flow=signup`,
         },
       });
 
       if (error) {
-        // エラーメッセージは過度に詳細にしない（列挙対策を維持）
-        const m = String(error.message || "");
-        if (/Email provider is disabled/i.test(m)) {
-          setMsg("メール送信が無効になっています。管理者にお問い合わせください。");
-        } else if (/redirect/i.test(m)) {
+        const status = (error as any).status;
+        if (status === 422) {
+          setMsg("このメールはすでに登録済みです。ログインするか、パスワード再設定をご利用ください。");
+        } else if (/redirect/i.test(error.message || "")) {
           setMsg("リダイレクトURLが許可されていません。管理者にお問い合わせください。");
-        } else if (/signups/i.test(m)) {
-          setMsg("現在新規登録は受け付けていません。管理者にお問い合わせください。");
         } else {
-          setMsg("処理に失敗しました。時間をおいて再度お試しください。");
+          setMsg(`登録に失敗しました：${error.message}`);
         }
         return;
       }
 
-      // 成功時は常に同一メッセージ（列挙対策）
-      setOkMsg("入力されたメールアドレス宛に案内メールを送信しました。届かない場合は迷惑メールをご確認ください。");
-    } catch {
-      setMsg("通信エラーが発生しました。時間をおいて再度お試しください。");
+      // 新規作成 or 未確認ユーザーへの再送のどちらでもこの文言でOK
+      setOkMsg("確認メールを送信しました。メール内のリンクから登録を完了してください。");
+    } catch (e: any) {
+      setMsg(`通信エラーが発生しました：${e?.message ?? "不明なエラー"}`);
     } finally {
       setBusy(false);
     }
@@ -96,11 +103,57 @@ export default function Signup() {
             />
           </div>
 
+          <label className="label" htmlFor="pw" style={{ marginTop: 10 }}>パスワード</label>
+          <div className="input-group">
+            <span className="input-icon" aria-hidden>
+              <svg width="18" height="18" viewBox="0 0 24 24">
+                <rect x="5" y="10" width="14" height="9" rx="2" fill="none" stroke="currentColor" strokeWidth="1.6"/>
+                <path d="M8 10V8a4 4 0 0 1 8 0v2" fill="none" stroke="currentColor" strokeWidth="1.6"/>
+              </svg>
+            </span>
+            <input
+              id="pw"
+              type="password"
+              placeholder="8文字以上"
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+              disabled={busy}
+              className="input"
+              required
+              minLength={8}
+              autoComplete="new-password"
+              inputMode="text"
+            />
+          </div>
+
+          <label className="label" htmlFor="pw2" style={{ marginTop: 10 }}>パスワード（確認）</label>
+          <div className="input-group">
+            <span className="input-icon" aria-hidden>
+              <svg width="18" height="18" viewBox="0 0 24 24">
+                <rect x="5" y="10" width="14" height="9" rx="2" fill="none" stroke="currentColor" strokeWidth="1.6"/>
+                <path d="M8 10V8a4 4 0 0 1 8 0v2" fill="none" stroke="currentColor" strokeWidth="1.6"/>
+              </svg>
+            </span>
+            <input
+              id="pw2"
+              type="password"
+              placeholder="もう一度入力"
+              value={pw2}
+              onChange={(e) => setPw2(e.target.value)}
+              disabled={busy}
+              className="input"
+              required
+              minLength={8}
+              autoComplete="new-password"
+              inputMode="text"
+            />
+          </div>
+
           {okMsg && <div className="auth-alert ok" role="status">{okMsg}</div>}
           {msg && <div className="auth-alert err" role="alert">{msg}</div>}
 
           <button type="submit" className="btn btn-primary auth-submit" disabled={!canSubmit}>
-            {busy ? <span className="spinner" aria-hidden /> : <span>メールを送信</span>}
+            {busy ? <span className="spinner" aria-hidden /> : <span>確認メールを送る</span>}
           </button>
 
           <button
