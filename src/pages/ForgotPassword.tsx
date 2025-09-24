@@ -1,21 +1,14 @@
 // src/pages/ForgotPassword.tsx
-import { useEffect, useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useState } from "react";
+import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { isAllowedEmail } from "../utils/domain";
 
 export default function ForgotPassword() {
-  const nav = useNavigate();
   const [email, setEmail] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) nav("/app", { replace: true });
-    });
-  }, [nav]);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,7 +23,6 @@ export default function ForgotPassword() {
     setBusy(true);
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        // `/reset-password` 直行でも、/auth 統一でもOK。ここでは直行にしています。
         redirectTo: `${window.location.origin}/reset-password`,
       });
       if (error) { setMsg(`送信に失敗：${error.message}`); return; }
