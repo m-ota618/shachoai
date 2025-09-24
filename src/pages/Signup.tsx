@@ -1,32 +1,61 @@
 // src/pages/Signup.tsx
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
+
+// 環境変数から許可ドメイン一覧を取得（空ならフロント側チェックは無効）
+function getAllowedDomains(): string[] {
+  return String(import.meta.env.VITE_ALLOWED_EMAIL_DOMAINS || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+function isAllowedEmail(email: string, allowed: string[]): boolean {
+  if (!allowed.length) return true;
+  const d = (email.toLowerCase().split("@")[1] || "").trim();
+  return !!d && allowed.some((dom) => d === dom || d.endsWith("." + dom));
+}
 
 export default function Signup() {
   const nav = useNavigate();
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
+  const [showPw, setShowPw] = useState(false);
+  const [showPw2, setShowPw2] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // 既ログインでも /signup から自動遷移しない（オンボーディングのため）
+  const allowedDomains = useMemo(() => getAllowedDomains(), []);
+
   useEffect(() => {
-    // 何もしない
+    // 既ログインでも /signup から自動遷移しない（オンボーディングのため）
   }, []);
 
-  const canSubmit = !!email && !!pw && !!pw2 && !busy;
+  const mail = email.trim().toLowerCase();
+  const domainOk = !email || isAllowedEmail(mail, allowedDomains);
+
+  const canSubmit =
+    !!email &&
+    !!pw &&
+    !!pw2 &&
+    pw.length >= 8 &&
+    pw === pw2 &&
+    domainOk &&
+    !busy;
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setMsg(null);
     setOkMsg(null);
 
-    const mail = email.trim().toLowerCase();
     if (!mail.includes("@")) {
       setMsg("メールアドレスの形式が正しくありません。");
+      return;
+    }
+    if (!isAllowedEmail(mail, allowedDomains)) {
+      setMsg("このメールドメインでは新規登録できません。会社のメールアドレスをご利用ください。");
       return;
     }
     if (pw.length < 8) {
@@ -40,13 +69,10 @@ export default function Signup() {
 
     setBusy(true);
     try {
-      // ★ Supabase JS v2: signUp は引数1つ（options 内に emailRedirectTo）
       const { error } = await supabase.auth.signUp({
         email: mail,
         password: pw,
-        options: {
-          emailRedirectTo: `${window.location.origin}/auth?flow=signup`,
-        },
+        options: { emailRedirectTo: `${window.location.origin}/auth?flow=signup` },
       });
 
       if (error) {
@@ -61,8 +87,7 @@ export default function Signup() {
         return;
       }
 
-      // 新規作成 or 未確認ユーザーへの再送のどちらでもこの文言でOK
-      setOkMsg("確認メールを送信しました。メール内のリンクから登録を完了してください。");
+      setOkMsg("確認メールを送信しました。メールのリンクから登録を完了してください。");
     } catch (e: any) {
       setMsg(`通信エラーが発生しました：${e?.message ?? "不明なエラー"}`);
     } finally {
@@ -103,6 +128,13 @@ export default function Signup() {
             />
           </div>
 
+          {!!email && !domainOk && (
+            <div className="auth-alert err" role="alert" style={{ marginTop: 8 }}>
+              入力されたドメインのメールでは登録できません。<br />
+              会社のメールアドレスをご利用いただくか、管理者にご相談ください。
+            </div>
+          )}
+
           <label className="label" htmlFor="pw" style={{ marginTop: 10 }}>パスワード</label>
           <div className="input-group">
             <span className="input-icon" aria-hidden>
@@ -113,7 +145,7 @@ export default function Signup() {
             </span>
             <input
               id="pw"
-              type="password"
+              type={showPw ? "text" : "password"}
               placeholder="8文字以上"
               value={pw}
               onChange={(e) => setPw(e.target.value)}
@@ -124,6 +156,16 @@ export default function Signup() {
               autoComplete="new-password"
               inputMode="text"
             />
+            <button
+              type="button"
+              className="input-affix-btn"
+              aria-label={showPw ? "パスワードを隠す" : "パスワードを表示"}
+              onClick={() => setShowPw((v) => !v)}
+              disabled={busy}
+              title={showPw ? "パスワードを隠す" : "パスワードを表示"}
+            >
+              {showPw ? "🙈" : "👁️"}
+            </button>
           </div>
 
           <label className="label" htmlFor="pw2" style={{ marginTop: 10 }}>パスワード（確認）</label>
@@ -136,7 +178,7 @@ export default function Signup() {
             </span>
             <input
               id="pw2"
-              type="password"
+              type={showPw2 ? "text" : "password"}
               placeholder="もう一度入力"
               value={pw2}
               onChange={(e) => setPw2(e.target.value)}
@@ -147,6 +189,16 @@ export default function Signup() {
               autoComplete="new-password"
               inputMode="text"
             />
+            <button
+              type="button"
+              className="input-affix-btn"
+              aria-label={showPw2 ? "パスワードを隠す" : "パスワードを表示"}
+              onClick={() => setShowPw2((v) => !v)}
+              disabled={busy}
+              title={showPw2 ? "パスワードを隠す" : "パスワードを表示"}
+            >
+              {showPw2 ? "🙈" : "👁️"}
+            </button>
           </div>
 
           {okMsg && <div className="auth-alert ok" role="status">{okMsg}</div>}
