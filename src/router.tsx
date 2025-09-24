@@ -7,7 +7,7 @@ import ResetPassword from "./pages/ResetPassword";
 import Signup from "./pages/Signup";
 import ForgotPassword from "./pages/ForgotPassword";
 import AuthCallback from "./pages/AuthCallback";
-import SetPassword from "./pages/SetPassword"; // ★ 追加
+import SetPassword from "./pages/SetPassword";
 import App from "./App";
 
 // フロント用 許可ドメイン（空ならフロント側ガードは無効＝サーバ側だけで制御）
@@ -22,21 +22,19 @@ function isAllowedDomain(email: string): boolean {
   return FRONT_ALLOWED.some((dom) => d === dom || d.endsWith("." + dom));
 }
 
-// 認証＋ドメインガード（/app など保護ルート専用）—堅牢化版
+// 認証＋ドメインガード（/app など保護ルート専用）— 即リダイレクト版
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
   const [forbidden, setForbidden] = useState(false);
   const loc = useLocation();
 
-  // レース/クリーンアップ制御
   const aliveRef = useRef(true);
   const timeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     aliveRef.current = true;
 
-    // ① 初回：getSession() の成否に関わらず ready を必ず立てる
     (async () => {
       try {
         const { data } = await supabase.auth.getSession();
@@ -46,7 +44,6 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
         setSignedIn(has);
 
         if (has) {
-          // email 判定は getUser() で安全に
           const { data: u } = await supabase.auth.getUser();
           if (!aliveRef.current) return;
           const email = u.user?.email || "";
@@ -54,14 +51,11 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
         } else {
           setForbidden(false);
         }
-      } catch {
-        // 失敗しても固まらないことを優先
       } finally {
         if (aliveRef.current) setReady(true);
       }
     })();
 
-    // ② 後続の変化監視（ログイン/ログアウト/トークン更新など）
     const { data: sub } = supabase.auth.onAuthStateChange(async (_e, session) => {
       if (!aliveRef.current) return;
 
@@ -78,7 +72,6 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
       }
     });
 
-    // ③ フェイルセーフ：ready が立たないケースを強制解放
     timeoutRef.current = window.setTimeout(() => {
       if (!aliveRef.current) return;
       setReady((prev) => prev || true);
@@ -94,24 +87,25 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // 許可外はサインアウトして /login へ（保険）
   useEffect(() => {
     if (!ready || !forbidden) return;
     supabase.auth.signOut().catch(() => {});
   }, [ready, forbidden]);
 
+  // ★ ここを「初回ロード中は即ログインへ」に変える
   if (!ready) {
-    return (
-      <main className="content">
-        <div className="wrap"><div className="skeleton">認証状態を確認中...</div></div>
-      </main>
-    );
+    const from = encodeURIComponent(loc.pathname + loc.search);
+    return <Navigate to={`/login?from=${from}`} replace />;
   }
+
   if (!signedIn) {
     const from = encodeURIComponent(loc.pathname + loc.search);
     return <Navigate to={`/login?from=${from}`} replace />;
   }
-  if (forbidden) return <Navigate to="/login" replace state={{ reason: "forbidden_domain" }} />;
+
+  if (forbidden) {
+    return <Navigate to="/login" replace state={{ reason: "forbidden_domain" }} />;
+  }
 
   return <>{children}</>;
 }
@@ -122,11 +116,9 @@ export default function Router() {
       {/* 公開ルート */}
       <Route path="/login" element={<Login />} />
       <Route path="/signup" element={<Signup />} />
-      {/* メールリンクの着地（ハッシュ #type=... を拾って内部で分岐 → /set-password 等へ） */}
       <Route path="/auth" element={<AuthCallback />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
-      {/* ★ 招待/サインアップ完了後の初回パスワード設定 */}
       <Route path="/set-password" element={<SetPassword />} />
 
       {/* 保護ルート */}
