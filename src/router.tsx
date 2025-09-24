@@ -92,8 +92,8 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     supabase.auth.signOut().catch(() => {});
   }, [ready, forbidden]);
 
-  // ★ ここを「初回ロード中は即ログインへ」に変える
-    if (!ready) {
+  // 初回ロード中はローディング（ログイン画面へ即リダイレクトはしない）
+  if (!ready) {
     return (
       <main className="content">
         <div className="wrap"><div className="skeleton">認証状態を確認中...</div></div>
@@ -116,6 +116,10 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 export default function Router() {
   return (
     <Routes>
+      {/* 直叩き・未知パスはログインへ */}
+      <Route path="/" element={<Navigate to="/login" replace />} />
+      <Route path="*" element={<Navigate to="/login" replace />} />
+
       {/* 公開ルート */}
       <Route path="/login" element={<Login />} />
       <Route path="/signup" element={<Signup />} />
@@ -133,9 +137,6 @@ export default function Router() {
           </RequireAuth>
         }
       />
-
-      {/* デフォルト */}
-      <Route path="*" element={<Navigate to="/app" replace />} />
     </Routes>
   );
 }
