@@ -1,10 +1,11 @@
 // src/pages/ForgotPassword.tsx
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { isAllowedEmail } from "../utils/domain";
 
 export default function ForgotPassword() {
+  const nav = useNavigate();
   const [email, setEmail] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
@@ -22,8 +23,9 @@ export default function ForgotPassword() {
 
     setBusy(true);
     try {
+      const PUBLIC_SITE_URL = import.meta.env.VITE_PUBLIC_SITE_URL || window.location.origin;
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password`,
+        redirectTo: `${PUBLIC_SITE_URL}/reset-password`,
       });
       if (error) { setMsg(`送信に失敗：${error.message}`); return; }
       setOkMsg("再設定用のメールを送信しました。受信トレイをご確認ください。");
@@ -74,9 +76,19 @@ export default function ForgotPassword() {
             {busy ? <span className="spinner" aria-hidden /> : <span>再設定メールを送る</span>}
           </button>
 
-          <Link to="/login" className="link-quiet" style={{ display: "inline-block", marginTop: 8 }}>
+          {/* 他と同じスタイルのボタン。必ず type="button" で submit を抑止 */}
+          <button
+            type="button"
+            className="btn btn-secondary auth-alt"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              nav("/login");
+            }}
+            style={{ marginTop: 8 }}
+          >
             ログインへ戻る
-          </Link>
+          </button>
         </form>
       </main>
     </>
