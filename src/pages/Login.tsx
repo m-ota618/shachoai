@@ -13,6 +13,11 @@ export default function Login() {
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // /login?from=/app&force=1 などのクエリを解釈
+  const params = new URLSearchParams(loc.search);
+  const fromQuery = params.get("from") || "/app";
+  const force = params.get("force") === "1"; // 将来「ログイン画面で再認証を強制」したい時に使える
+
   // ルーターガード（RequireAuth）からの理由付リダイレクトを拾う
   const reason = (loc.state as any)?.reason as string | undefined;
   useEffect(() => {
@@ -21,44 +26,18 @@ export default function Login() {
     }
   }, [reason]);
 
-  // 既ログイン → /app
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) nav("/app", { replace: true });
-    });
-  }, [nav]);
+  // ★ 以前は「既ログイン → /app」へ自動遷移していたが、ここを撤去。
+  //    URL直叩き時には必ずログイン画面に滞在させる。
+  //    （どうしても残したい場合は以下のように force が無い時だけ動かす）
+  //
+  // useEffect(() => {
+  //   if (force) return; // 強制ログインモードでは自動遷移しない
+  //   supabase.auth.getSession().then(({ data }) => {
+  //     if (data.session) nav("/app", { replace: true });
+  //   });
+  // }, [nav, force]);
 
-  // コールバック種別に応じて遷移（URLハッシュ #access_token などをSupabaseが取り込む前提）
-  useEffect(() => {
-    const hash = window.location.hash || "";
-    const q = new URLSearchParams(hash.replace(/^#/, ""));
-    const type = q.get("type");
-
-    // パスワード再設定リンク
-    if (type === "recovery") {
-      nav("/reset-password", { replace: true });
-      return;
-    }
-
-    // ★ 招待/サインアップは初回パスワード設定へ
-    if (type === "signup" || type === "invite") {
-      nav("/set-password", { replace: true });
-      return;
-    }
-
-    // マジックリンク/メール変更はサインイン想定 → /app
-    if (type === "magiclink" || type === "email_change") {
-      nav("/app", { replace: true });
-      return;
-    }
-
-    // ランタイムの状態変化も拾う
-    const { data: sub } = supabase.auth.onAuthStateChange((event, _session) => {
-      if (event === "PASSWORD_RECOVERY") nav("/reset-password", { replace: true });
-      if (event === "SIGNED_IN") nav("/app", { replace: true });
-    });
-    return () => sub.subscription.unsubscribe();
-  }, [nav]);
+  // ★ メールリンクの #type=... は AuthCallback.tsx に任せるため、ここでは扱わない
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,8 +46,8 @@ export default function Login() {
     try {
       const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
       if (error) { setMsg(`ログイン失敗：${error.message}`); return; }
-      const from = (loc.state as any)?.from?.pathname || "/app";
-      nav(from, { replace: true });
+      // RequireAuth が ?from= を付けてくれるので、そこへ戻す
+      nav(fromQuery, { replace: true });
     } catch (e: any) {
       setMsg(`ログイン失敗：${e?.message ?? "不明なエラー"}`);
     } finally {
