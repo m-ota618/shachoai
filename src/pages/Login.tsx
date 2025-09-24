@@ -13,11 +13,6 @@ export default function Login() {
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // 以前の from/force は使用しない（成功時は常に /app へ）
-  // const params = new URLSearchParams(loc.search);
-  // const fromQuery = params.get("from") || "/app";
-  // const force = params.get("force") === "1";
-
   // ルーターガード（RequireAuth）からの理由付リダイレクトを拾う
   const reason = (loc.state as any)?.reason as string | undefined;
   useEffect(() => {
@@ -25,14 +20,6 @@ export default function Login() {
       setMsg("許可されていないメールドメインです。会社のメールアドレスでログインしてください。");
     }
   }, [reason]);
-
-  // 自動遷移は行わない（URL直叩き時は必ずログイン画面に滞在）
-  // useEffect(() => {
-  //   if (force) return;
-  //   supabase.auth.getSession().then(({ data }) => {
-  //     if (data.session) nav("/app", { replace: true });
-  //   });
-  // }, [nav, force]);
 
   const login = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -137,14 +124,19 @@ export default function Login() {
             {busy ? <span className="spinner" aria-hidden /> : <span>ログイン</span>}
           </button>
 
-          {/* 別画面で再設定 */}
-          <Link
-            to="/forgot-password"
+          {/* 別画面で再設定（submitを絶対に発火させない） */}
+          <button
+            type="button"
             className="btn btn-secondary auth-alt"
             title="再設定用リンクをメールで受け取る"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              nav("/forgot-password");
+            }}
           >
             パスワードをお忘れの方
-          </Link>
+          </button>
 
           <div style={{ marginTop: 8, textAlign: 'center', fontSize: 13 }}>
             アカウントをお持ちでない方は{" "}
