@@ -12,9 +12,21 @@ import type {
   BulkRunResult,
 } from '../types';
 
-/** フロント→サーバレス関数の基底URL（未設定なら /api） */
-const API_BASE = (import.meta.env.VITE_API_BASE as string) || '/api';
-const GAS_URL = `${API_BASE.replace(/\/$/, '')}/gas`;
+/** フロント→サーバレス関数の基底URLを正規化（未設定なら /api、相対なら先頭に/付与、末尾/除去） ★追加 */
+function normalizeBase(v?: string): string {
+  const raw = (v ?? "").trim();
+  if (!raw) return "/api";
+  // フルURLはそのまま（末尾スラッシュだけ除去）
+  if (/^https?:\/\//i.test(raw)) return raw.replace(/\/+$/, "");
+  // 相対指定（例: "api"）は必ず先頭スラッシュを付ける → "/api"
+  const withLeading = raw.startsWith("/") ? raw : `/${raw}`;
+  return withLeading.replace(/\/+$/, "");
+}
+
+/** フロント→サーバレス関数の基底URL（未設定なら /api） ★変更 */
+const API_BASE = normalizeBase(import.meta.env.VITE_API_BASE as string);
+/** GASエンドポイントURL（常に絶対パス or フルURLになる） ★変更 */
+const GAS_URL = `${API_BASE}/gas`;
 
 /** 相関IDの生成（ブラウザの crypto.randomUUID が無い環境に備えてフォールバック） */
 function newTraceId(): string {
