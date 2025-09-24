@@ -93,9 +93,12 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   }, [ready, forbidden]);
 
   // ★ ここを「初回ロード中は即ログインへ」に変える
-  if (!ready) {
-    const from = encodeURIComponent(loc.pathname + loc.search);
-    return <Navigate to={`/login?from=${from}`} replace />;
+    if (!ready) {
+    return (
+      <main className="content">
+        <div className="wrap"><div className="skeleton">認証状態を確認中...</div></div>
+      </main>
+    );
   }
 
   if (!signedIn) {
