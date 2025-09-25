@@ -28,7 +28,7 @@ const ACTION_VALIDATORS = {
       (p.topics == null || Array.isArray(p.topics)) &&
       (p.area == null || typeof p.area === 'string') &&
       (p.limit == null || Number.isInteger(Number(p.limit))) &&
-      (p.offset == null || Number.isInteger(Number(p.offset))) &&
+      (p.offset == null || Number.isInteger(Number(p?.offset))) &&
       (p.pinnedFirst == null || typeof p.pinnedFirst === 'boolean');
     return types;
   },
@@ -240,16 +240,26 @@ export default async function handler(req, res) {
   try { valid = !!validator(payload); } catch { valid = false; }
   if (!valid) return badRequest(res, traceId, 'invalid_payload_shape', { action });
 
-  // ======== テナント解決：X-Tenant-Id → X-Tenant-Slug → /:slug → Host → Email ========
+  // ======== テナント解決：Slug（header→path）→ X-Tenant-Id → Host → Email ========
   const host = requestHost(req);
-  const hintedTenantId = requestTenantId(req);
   const hintedSlug = requestTenantSlug(req);
   const pathSlug = requestSlugFromPath(req);
+  const hintedTenantId = requestTenantId(req);
 
   let tenant = null;
 
-  // (A) ヒント：X-Tenant-Id（UUID）
-  if (hintedTenantId) {
+  // (A) Slug 最優先（ヘッダ）
+  if (!tenant && hintedSlug) {
+    tenant = await resolveTenantBySlug({ slug: hintedSlug, traceId });
+  }
+
+  // (B) Slug（URL 先頭セグメント）
+  if (!tenant && pathSlug) {
+    tenant = await resolveTenantBySlug({ slug: pathSlug, traceId });
+  }
+
+  // (C) ヒント：X-Tenant-Id（UUID）
+  if (!tenant && hintedTenantId) {
     try {
       const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
       const { data, error } = await admin
@@ -262,16 +272,6 @@ export default async function handler(req, res) {
     } catch (e) {
       log('error', { traceId, where: 'tenant', msg: 'hint_lookup_failed', err: String(e) });
     }
-  }
-
-  // (B) ヒント：X-Tenant-Slug
-  if (!tenant && hintedSlug) {
-    tenant = await resolveTenantBySlug({ slug: hintedSlug, traceId });
-  }
-
-  // (C) URL 先頭 /:slug
-  if (!tenant && pathSlug) {
-    tenant = await resolveTenantBySlug({ slug: pathSlug, traceId });
   }
 
   // (D) Host（独自ドメイン）
@@ -322,6 +322,7 @@ export default async function handler(req, res) {
     const text = await r.text();
     const ct = r.headers.get('content-type') || 'text/plain; charset=utf-8';
 
+    // GASが {ok:false,error} を返してきたらHTTPへ昇格
     let maybeJson;
     if (ct.includes('application/json')) {
       try { maybeJson = JSON.parse(text); } catch { /* noop */ }
