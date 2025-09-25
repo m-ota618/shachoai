@@ -4,8 +4,9 @@ import { randomUUID, randomBytes } from 'node:crypto';
 
 /* ==================== constants ==================== */
 const MAX_PAYLOAD_BYTES = 256 * 1024; // 256KB（DoS/誤送信対策）
+const GAS_ENV = process.env.GAS_ENV || 'prod'; // 任意：GAS側で環境分岐したい場合
 
-// 最小限のアクション・バリデータ（必要に応じて拡張）
+/* ==================== action validators ==================== */
 const ACTION_VALIDATORS = {
   getUnanswered: () => true,
   getDrafts: () => true,
@@ -72,7 +73,6 @@ function setCors(req, res) {
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Trace-Id, X-Tenant-Id');
-  // x-trace-id / X-Build をフロントで読めるように露出
   res.setHeader('Access-Control-Expose-Headers', 'X-Trace-Id, x-trace-id, X-Build, Content-Type, X-Tenant-Id, X-GAS-Endpoint');
 
   if (allow.length) {
@@ -83,7 +83,6 @@ function setCors(req, res) {
 }
 
 function setTraceHeaders(res, traceId) {
-  // ツール差異を吸収するため大小どちらのヘッダ名も付ける（冪等）
   res.setHeader('X-Trace-Id', traceId);
   res.setHeader('x-trace-id', traceId);
   const sha = (process.env.VERCEL_GIT_COMMIT_SHA || '').slice(0, 7);
@@ -108,27 +107,32 @@ function payloadTooLarge(res, traceId, size) {
   return res.status(413).json({ error: 'payload_too_large', traceId });
 }
 
+function requestHost(req) {
+  return String(
+    req.headers?.['x-forwarded-host'] ||
+    req.headers?.host ||
+    ''
+  ).toLowerCase();
+}
+
 /* ================ tenant resolver (RPC版) ================ */
 /** org_domains→org_settings を参照する公式リゾルバ（未解決時 null） */
-async function resolveTenantByDomain({ userDomain, traceId }) {
+async function resolveTenantByDomain({ domainLike, traceId }) {
   const SUPABASE_URL = process.env.SUPABASE_URL;
   const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 
-  // 必須（フォールバック禁止）
-  if (!SUPABASE_SERVICE_ROLE) {
-    log('error', { traceId, where: 'tenant', msg: 'missing_service_role' });
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
+    log('error', { traceId, where: 'tenant', msg: 'missing_supabase_env' });
     return null;
   }
 
   try {
-    // public スキーマで RPC 呼び出し
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
     const { data, error } = await admin.rpc('resolve_tenant', {
-      p_domain: String(userDomain || '').toLowerCase(),
+      p_domain: String(domainLike || '').toLowerCase(),
     });
     if (error) throw error;
-    // data は { org_id, gas_endpoint, gas_token } の1行 or null を想定
-    return data || null;
+    return data || null; // [{ org_id, gas_endpoint, gas_token }] or null
   } catch (e) {
     log('error', { traceId, where: 'tenant', msg: 'resolve_failed', err: String(e) });
     return null;
@@ -140,7 +144,6 @@ export default async function handler(req, res) {
   const t0 = Date.now();
   setCors(req, res);
 
-  // 最初に採番 → 全レスに必ず付与
   const traceId = newTraceId(req);
   setTraceHeaders(res, traceId);
 
@@ -151,50 +154,40 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'method_not_allowed', traceId });
   }
 
-  // 必須ENV
-  const ENDPOINT = process.env.GAS_ENDPOINT; // ※ フォールバックには使用しない（互換目的の存在チェックのみ）
-  const API_TOKEN = process.env.API_TOKEN;   // 同上
+  // ======== 必須ENV（DB版では Supabase だけ必須）========
   const SUPABASE_URL = process.env.SUPABASE_URL;
-  const SUPABASE_ANON = process.env.SUPABASE_ANON;
-  const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE; // ← 必須化
-  const GAS_ENV = process.env.GAS_ENV || 'prod';
+  const SUPABASE_ANON = process.env.SUPABASE_ANON; // 任意：Bearer検証をするなら必要
+  const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 
   const miss = [];
-  if (!ENDPOINT) miss.push('GAS_ENDPOINT');
-  if (!API_TOKEN) miss.push('API_TOKEN');
   if (!SUPABASE_URL) miss.push('SUPABASE_URL');
-  if (!SUPABASE_ANON) miss.push('SUPABASE_ANON');
-  if (!SUPABASE_SERVICE_ROLE) miss.push('SUPABASE_SERVICE_ROLE'); // 必須
+  if (!SUPABASE_SERVICE_ROLE) miss.push('SUPABASE_SERVICE_ROLE');
   if (miss.length) {
     log('error', { traceId, where: 'cfg', msg: 'missing_env', missing: miss });
     return res.status(502).json({ error: 'missing_env', missing: miss, traceId });
   }
 
-  // Bearer必須（Supabaseセッション）
+  // ======== 認証（任意）========
+  // Hostベースでテナント解決するため、Bearerが無くても進行可能。
+  // 付与されていれば Supabase で検証し、ログ相関に使う。
+  let userEmail = '', userDomainFromToken = '';
   const authz = String(req.headers?.authorization || '');
-  if (!/^Bearer\s+.+/i.test(authz)) {
-    log('error', { traceId, where: 'auth', msg: 'missing_bearer' });
-    return res.status(401).json({ error: 'missing_bearer', traceId });
-  }
-  const accessToken = authz.replace(/^Bearer\s+/i, '');
-
-  // トークン検証（※ ALLOWED_EMAIL_DOMAINS は撤去）
-  let userEmail = '', userDomain = '';
-  try {
-    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
-    const { data, error } = await supabase.auth.getUser(accessToken);
-    if (error || !data?.user?.email) {
-      log('error', { traceId, where: 'auth', msg: 'token_verify_failed' });
-      return res.status(401).json({ error: 'unauthorized', traceId });
+  if (/^Bearer\s+.+/i.test(authz) && SUPABASE_ANON) {
+    const accessToken = authz.replace(/^Bearer\s+/i, '');
+    try {
+      const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
+      const { data, error } = await supabase.auth.getUser(accessToken);
+      if (!error && data?.user?.email) {
+        userEmail = String(data.user.email).toLowerCase();
+        userDomainFromToken = userEmail.split('@')[1] || '';
+      }
+    } catch (e) {
+      log('error', { traceId, where: 'auth', msg: 'supabase_error', err: String(e) });
+      // 続行（Host 解決で処理可能）
     }
-    userEmail = String(data.user.email).toLowerCase();
-    userDomain = userEmail.split('@')[1] || '';
-  } catch (e) {
-    log('error', { traceId, where: 'auth', msg: 'supabase_error', err: String(e) });
-    return res.status(500).json({ error: 'auth_failed', traceId });
   }
 
-  // 入力（JSON）
+  // ======== 入力（JSON）========
   const body = parseBody(req);
   const action = body?.action;
   const payload = body?.payload ?? {};
@@ -202,7 +195,6 @@ export default async function handler(req, res) {
     return badRequest(res, traceId, 'missing_action');
   }
 
-  // アクション/ペイロード検証
   const validator = ACTION_VALIDATORS[action];
   if (!validator) return badRequest(res, traceId, 'invalid_action', { action });
 
@@ -219,11 +211,13 @@ export default async function handler(req, res) {
   try { valid = !!validator(payload); } catch { valid = false; }
   if (!valid) return badRequest(res, traceId, 'invalid_payload_shape', { action });
 
-  // === テナント解決（org_domains→org_settings / 未解決は403・フォールバック禁止） ===
-  const tenant = await resolveTenantByDomain({ userDomain, traceId });
+  // ======== テナント解決（Hostベース）========
+  const host = requestHost(req);
+  const tenantRows = await resolveTenantByDomain({ domainLike: host, traceId });
+  const tenant = Array.isArray(tenantRows) && tenantRows.length ? tenantRows[0] : null;
 
   if (!tenant) {
-    log('error', { traceId, where: 'tenant', msg: 'tenant_not_found', userDomain });
+    log('error', { traceId, where: 'tenant', msg: 'tenant_not_found', host, userDomainFromToken });
     res.setHeader('X-Tenant-Id', '');
     res.setHeader('X-GAS-Endpoint', '');
     return res.status(403).json({ error: 'tenant_not_found', traceId });
@@ -232,26 +226,27 @@ export default async function handler(req, res) {
   const TARGET_ENDPOINT = tenant.gas_endpoint;
   const TARGET_TOKEN = tenant.gas_token;
 
-  // 観測ヘッダ（検証後に外してOK）
+  // 観測ヘッダ（検証中に便利。運用安定後に削除可）
   res.setHeader('X-Tenant-Id', tenant.org_id || '');
   res.setHeader('X-GAS-Endpoint', TARGET_ENDPOINT || '');
 
-  // GASへ中継
+  // ======== GASへ中継（x-www-form-urlencoded）========
   try {
     log('info', {
       traceId,
       where: 'forward',
       action,
-      tenantId: tenant?.org_id || null, // org_id に統一
-      userDomain,
+      tenantId: tenant?.org_id || null,
+      host,
+      userEmail,
       env: GAS_ENV
     });
 
     const params = new URLSearchParams();
     params.set('action', String(action));
-    params.set('token', TARGET_TOKEN); // DBの token を使用
+    params.set('token', TARGET_TOKEN || ''); // DBの token を使用（将来は Authorization ヘッダに移行可）
     params.set('env', GAS_ENV);
-    params.set('traceId', traceId);    // GAS 側でログ相関できるよう付与
+    params.set('traceId', traceId);
     if (tenant?.org_id) params.set('tenantId', tenant.org_id);
     params.set('payload', typeof payload === 'string' ? payload : JSON.stringify(payload));
 
@@ -285,7 +280,7 @@ export default async function handler(req, res) {
 
     log('info', { traceId, where: 'forward_result', status: outStatus, duration_ms: Date.now() - t0 });
     res.setHeader('Content-Type', outCT);
-    setTraceHeaders(res, traceId); // 念押し
+    setTraceHeaders(res, traceId);
     return res.status(outStatus).send(outBody);
   } catch (e) {
     log('error', {
@@ -295,7 +290,7 @@ export default async function handler(req, res) {
       err: String(e),
       duration_ms: Date.now() - t0
     });
-    setTraceHeaders(res, traceId); // 念押し
+    setTraceHeaders(res, traceId);
     return res.status(502).json({ error: 'bad_gateway', traceId });
   }
 }
