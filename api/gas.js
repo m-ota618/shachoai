@@ -115,8 +115,12 @@ function requestHost(req) {
   ).toLowerCase();
 }
 
-/* ================ tenant resolver (RPC版) ================ */
-/** org_domains→org_settings を参照する公式リゾルバ（未解決時 null） */
+function requestTenantId(req) {
+  const h = req.headers?.['x-tenant-id'];
+  return h ? String(h).trim() : '';
+}
+
+/* ================ tenant resolvers (RPC/DB) ================ */
 async function resolveTenantByDomain({ domainLike, traceId }) {
   const SUPABASE_URL = process.env.SUPABASE_URL;
   const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
@@ -134,7 +138,23 @@ async function resolveTenantByDomain({ domainLike, traceId }) {
     if (error) throw error;
     return data || null; // [{ org_id, gas_endpoint, gas_token }] or null
   } catch (e) {
-    log('error', { traceId, where: 'tenant', msg: 'resolve_failed', err: String(e) });
+    log('error', { traceId, where: 'tenant', msg: 'resolve_domain_failed', err: String(e) });
+    return null;
+  }
+}
+
+async function resolveTenantByEmail({ email, traceId }) {
+  const SUPABASE_URL = process.env.SUPABASE_URL;
+  const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) return null;
+
+  try {
+    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
+    const { data, error } = await admin.rpc('resolve_tenant_by_email', { p_email: String(email || '').toLowerCase() });
+    if (error) throw error;
+    return data || null; // [{ org_id, gas_endpoint, gas_token }] or null
+  } catch (e) {
+    log('error', { traceId, where: 'tenant', msg: 'resolve_email_failed', err: String(e) });
     return null;
   }
 }
@@ -169,7 +189,7 @@ export default async function handler(req, res) {
 
   // ======== 認証（任意）========
   // Hostベースでテナント解決するため、Bearerが無くても進行可能。
-  // 付与されていれば Supabase で検証し、ログ相関に使う。
+  // 付与されていれば Supabase で検証し、メールドメインを fallback に使う。
   let userEmail = '', userDomainFromToken = '';
   const authz = String(req.headers?.authorization || '');
   if (/^Bearer\s+.+/i.test(authz) && SUPABASE_ANON) {
@@ -183,7 +203,7 @@ export default async function handler(req, res) {
       }
     } catch (e) {
       log('error', { traceId, where: 'auth', msg: 'supabase_error', err: String(e) });
-      // 続行（Host 解決で処理可能）
+      // 続行（Host/Hint 解決で処理可能）
     }
   }
 
@@ -211,23 +231,55 @@ export default async function handler(req, res) {
   try { valid = !!validator(payload); } catch { valid = false; }
   if (!valid) return badRequest(res, traceId, 'invalid_payload_shape', { action });
 
-  // ======== テナント解決（Hostベース）========
+  // ======== テナント解決：X-Tenant-Id → Host → Email ========
   const host = requestHost(req);
-  const tenantRows = await resolveTenantByDomain({ domainLike: host, traceId });
-  const tenant = Array.isArray(tenantRows) && tenantRows.length ? tenantRows[0] : null;
+  const hintedTenantId = requestTenantId(req);
 
-  if (!tenant) {
-    log('error', { traceId, where: 'tenant', msg: 'tenant_not_found', host, userDomainFromToken });
-    res.setHeader('X-Tenant-Id', '');
-    res.setHeader('X-GAS-Endpoint', '');
-    return res.status(403).json({ error: 'tenant_not_found',host, traceId });
+  let tenant = null;
+
+  // (A) ヒント優先：X-Tenant-Id（UUID）を使う
+  if (hintedTenantId) {
+    try {
+      const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
+      const { data, error } = await admin
+        .from('org_settings')
+        .select('org_id, gas_endpoint, gas_token')
+        .eq('org_id', hintedTenantId)
+        .limit(1)
+        .maybeSingle();
+      if (!error && data) {
+        tenant = [data]; // 後段の「配列→先頭取り」に合わせる
+      }
+    } catch (e) {
+      log('error', { traceId, where: 'tenant', msg: 'hint_lookup_failed', err: String(e) });
+    }
   }
 
-  const TARGET_ENDPOINT = tenant.gas_endpoint;
-  const TARGET_TOKEN = tenant.gas_token;
+  // (B) Host で解決（未決なら）
+  if (!tenant) {
+    tenant = await resolveTenantByDomain({ domainLike: host, traceId });
+  }
+
+  // (C) メールドメインで解決（まだ未決なら & emailが取れていれば）
+  if ((!tenant || !tenant.length) && userEmail) {
+    tenant = await resolveTenantByEmail({ email: userEmail, traceId });
+  }
+
+  const tenantRow = Array.isArray(tenant) && tenant.length ? tenant[0] : null;
+
+  if (!tenantRow) {
+    log('error', { traceId, where: 'tenant', msg: 'tenant_not_found', host, userDomainFromToken, hintedTenantId });
+    res.setHeader('X-Debug-Host', host);
+    res.setHeader('X-Tenant-Id', '');
+    res.setHeader('X-GAS-Endpoint', '');
+    return res.status(403).json({ error: 'tenant_not_found', host, traceId });
+  }
+
+  const TARGET_ENDPOINT = tenantRow.gas_endpoint;
+  const TARGET_TOKEN = tenantRow.gas_token;
 
   // 観測ヘッダ（検証中に便利。運用安定後に削除可）
-  res.setHeader('X-Tenant-Id', tenant.org_id || '');
+  res.setHeader('X-Tenant-Id', tenantRow.org_id || '');
   res.setHeader('X-GAS-Endpoint', TARGET_ENDPOINT || '');
 
   // ======== GASへ中継（x-www-form-urlencoded）========
@@ -236,7 +288,7 @@ export default async function handler(req, res) {
       traceId,
       where: 'forward',
       action,
-      tenantId: tenant?.org_id || null,
+      tenantId: tenantRow?.org_id || null,
       host,
       userEmail,
       env: GAS_ENV
@@ -247,7 +299,7 @@ export default async function handler(req, res) {
     params.set('token', TARGET_TOKEN || ''); // DBの token を使用（将来は Authorization ヘッダに移行可）
     params.set('env', GAS_ENV);
     params.set('traceId', traceId);
-    if (tenant?.org_id) params.set('tenantId', tenant.org_id);
+    if (tenantRow?.org_id) params.set('tenantId', tenantRow.org_id);
     params.set('payload', typeof payload === 'string' ? payload : JSON.stringify(payload));
 
     const r = await fetch(TARGET_ENDPOINT, {
