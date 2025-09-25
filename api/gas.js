@@ -73,7 +73,7 @@ function setCors(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Trace-Id, X-Tenant-Id');
   // x-trace-id / X-Build をフロントで読めるように露出
-  res.setHeader('Access-Control-Expose-Headers', 'X-Trace-Id, x-trace-id, X-Build, Content-Type');
+  res.setHeader('Access-Control-Expose-Headers', 'X-Trace-Id, x-trace-id, X-Build, Content-Type, X-Tenant-Id, X-GAS-Endpoint');
 
   if (allow.length) {
     if (allow.includes(origin)) res.setHeader('Access-Control-Allow-Origin', origin);
@@ -108,54 +108,27 @@ function payloadTooLarge(res, traceId, size) {
   return res.status(413).json({ error: 'payload_too_large', traceId });
 }
 
-/* ================ tenant resolver ================ */
-async function resolveTenant({ userDomain, headerTenantId, traceId }) {
+/* ================ tenant resolver (RPC版) ================ */
+/** org_domains→org_settings を参照する公式リゾルバ（未解決時 null） */
+async function resolveTenantByDomain({ userDomain, traceId }) {
   const SUPABASE_URL = process.env.SUPABASE_URL;
   const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 
+  // 必須（フォールバック禁止）
   if (!SUPABASE_SERVICE_ROLE) {
-    // 互換モード（テナント解決をスキップしてENVを使う）
+    log('error', { traceId, where: 'tenant', msg: 'missing_service_role' });
     return null;
   }
 
   try {
-    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
-      db: { schema: 'private' }, // private.tenants
+    // public スキーマで RPC 呼び出し
+    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
+    const { data, error } = await admin.rpc('resolve_tenant', {
+      p_domain: String(userDomain || '').toLowerCase(),
     });
-
-    // 1) ヘッダ指定（管理者UI向け）を最優先
-    if (headerTenantId) {
-      const { data, error } = await admin
-        .from('tenants')
-        .select('id, display_name, domain, include_subdomains, gas_endpoint, gas_token, enabled')
-        .eq('enabled', true)
-        .eq('id', headerTenantId)
-        .limit(1)
-        .maybeSingle();
-      if (error) throw error;
-      if (data) return data;
-    }
-
-    // 2) メールドメインで解決（exact > subdomain）
-    const { data: rows, error: e2 } = await admin
-      .from('tenants')
-      .select('id, display_name, domain, include_subdomains, gas_endpoint, gas_token, enabled')
-      .eq('enabled', true)
-      .limit(200);
-    if (e2) throw e2;
-
-    const d = String(userDomain || '').toLowerCase();
-    const exact = (rows || []).find(r => String(r.domain || '').toLowerCase() === d);
-    if (exact) return exact;
-
-    const sub = (rows || []).find(r =>
-      r.include_subdomains &&
-      (d === String(r.domain || '').toLowerCase() ||
-       d.endsWith('.' + String(r.domain || '').toLowerCase()))
-    );
-    if (sub) return sub;
-
-    return null;
+    if (error) throw error;
+    // data は { org_id, gas_endpoint, gas_token } の1行 or null を想定
+    return data || null;
   } catch (e) {
     log('error', { traceId, where: 'tenant', msg: 'resolve_failed', err: String(e) });
     return null;
@@ -179,19 +152,19 @@ export default async function handler(req, res) {
   }
 
   // 必須ENV
-  const ENDPOINT = process.env.GAS_ENDPOINT;
-  const API_TOKEN = process.env.API_TOKEN;
+  const ENDPOINT = process.env.GAS_ENDPOINT; // ※ フォールバックには使用しない（互換目的の存在チェックのみ）
+  const API_TOKEN = process.env.API_TOKEN;   // 同上
   const SUPABASE_URL = process.env.SUPABASE_URL;
   const SUPABASE_ANON = process.env.SUPABASE_ANON;
+  const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE; // ← 必須化
   const GAS_ENV = process.env.GAS_ENV || 'prod';
-  const ALLOWED_EMAIL_DOMAINS = (process.env.ALLOWED_EMAIL_DOMAINS || '')
-    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 
   const miss = [];
   if (!ENDPOINT) miss.push('GAS_ENDPOINT');
   if (!API_TOKEN) miss.push('API_TOKEN');
   if (!SUPABASE_URL) miss.push('SUPABASE_URL');
   if (!SUPABASE_ANON) miss.push('SUPABASE_ANON');
+  if (!SUPABASE_SERVICE_ROLE) miss.push('SUPABASE_SERVICE_ROLE'); // 必須
   if (miss.length) {
     log('error', { traceId, where: 'cfg', msg: 'missing_env', missing: miss });
     return res.status(502).json({ error: 'missing_env', missing: miss, traceId });
@@ -205,7 +178,7 @@ export default async function handler(req, res) {
   }
   const accessToken = authz.replace(/^Bearer\s+/i, '');
 
-  // トークン検証＆メールドメイン制限
+  // トークン検証（※ ALLOWED_EMAIL_DOMAINS は撤去）
   let userEmail = '', userDomain = '';
   try {
     const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
@@ -216,17 +189,6 @@ export default async function handler(req, res) {
     }
     userEmail = String(data.user.email).toLowerCase();
     userDomain = userEmail.split('@')[1] || '';
-
-    if (ALLOWED_EMAIL_DOMAINS.length) {
-      const ok = ALLOWED_EMAIL_DOMAINS.some((domRaw) => {
-        const dom = String(domRaw).toLowerCase();
-        return userDomain === dom || userEmail.endsWith(`@${dom}`);
-      });
-      if (!ok) {
-        log('error', { traceId, where: 'auth', msg: 'forbidden_domain', domain: userDomain });
-        return res.status(403).json({ error: 'forbidden_domain', traceId });
-      }
-    }
   } catch (e) {
     log('error', { traceId, where: 'auth', msg: 'supabase_error', err: String(e) });
     return res.status(500).json({ error: 'auth_failed', traceId });
@@ -257,13 +219,22 @@ export default async function handler(req, res) {
   try { valid = !!validator(payload); } catch { valid = false; }
   if (!valid) return badRequest(res, traceId, 'invalid_payload_shape', { action });
 
-  // テナント選択（管理者UI向けヘッダも受ける）
-  const headerTenantId = typeof req.headers?.['x-tenant-id'] === 'string' ? req.headers['x-tenant-id'] : '';
+  // === テナント解決（org_domains→org_settings / 未解決は403・フォールバック禁止） ===
+  const tenant = await resolveTenantByDomain({ userDomain, traceId });
 
-  // テナント解決（見つからなければ従来ENVにフォールバック）
-  const tenant = await resolveTenant({ userDomain, headerTenantId, traceId });
-  const TARGET_ENDPOINT = tenant?.gas_endpoint || ENDPOINT;
-  const TARGET_TOKEN    = tenant?.gas_token    || API_TOKEN;
+  if (!tenant) {
+    log('error', { traceId, where: 'tenant', msg: 'tenant_not_found', userDomain });
+    res.setHeader('X-Tenant-Id', '');
+    res.setHeader('X-GAS-Endpoint', '');
+    return res.status(403).json({ error: 'tenant_not_found', traceId });
+  }
+
+  const TARGET_ENDPOINT = tenant.gas_endpoint;
+  const TARGET_TOKEN = tenant.gas_token;
+
+  // 観測ヘッダ（検証後に外してOK）
+  res.setHeader('X-Tenant-Id', tenant.org_id || '');
+  res.setHeader('X-GAS-Endpoint', TARGET_ENDPOINT || '');
 
   // GASへ中継
   try {
@@ -271,18 +242,17 @@ export default async function handler(req, res) {
       traceId,
       where: 'forward',
       action,
-      tenantId: tenant?.id || headerTenantId || null,
+      tenantId: tenant?.org_id || null, // org_id に統一
       userDomain,
       env: GAS_ENV
     });
 
     const params = new URLSearchParams();
     params.set('action', String(action));
-    params.set('token', TARGET_TOKEN); // ← テナントで差し替え
+    params.set('token', TARGET_TOKEN); // DBの token を使用
     params.set('env', GAS_ENV);
     params.set('traceId', traceId);    // GAS 側でログ相関できるよう付与
-    if (tenant?.id) params.set('tenantId', tenant.id);
-    else if (headerTenantId) params.set('tenantId', headerTenantId);
+    if (tenant?.org_id) params.set('tenantId', tenant.org_id);
     params.set('payload', typeof payload === 'string' ? payload : JSON.stringify(payload));
 
     const r = await fetch(TARGET_ENDPOINT, {
