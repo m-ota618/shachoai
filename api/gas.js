@@ -72,7 +72,7 @@ function setCors(req, res) {
 
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Trace-Id, X-Tenant-Id');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Trace-Id, X-Tenant-Id, X-Tenant-Slug');
   res.setHeader('Access-Control-Expose-Headers', 'X-Trace-Id, x-trace-id, X-Build, Content-Type, X-Tenant-Id, X-GAS-Endpoint');
 
   if (allow.length) {
@@ -108,16 +108,22 @@ function payloadTooLarge(res, traceId, size) {
 }
 
 function requestHost(req) {
-  return String(
-    req.headers?.['x-forwarded-host'] ||
-    req.headers?.host ||
-    ''
-  ).toLowerCase();
+  return String(req.headers?.['x-forwarded-host'] || req.headers?.host || '').toLowerCase();
 }
-
 function requestTenantId(req) {
   const h = req.headers?.['x-tenant-id'];
   return h ? String(h).trim() : '';
+}
+function requestTenantSlug(req) {
+  const h = req.headers?.['x-tenant-slug'];
+  return h ? String(h).trim().toLowerCase() : '';
+}
+function requestSlugFromPath(req) {
+  try {
+    const url = new URL(req.url, `https://${req.headers?.host || 'localhost'}`);
+    const seg = (url.pathname || '/').split('/').filter(Boolean)[0] || '';
+    return seg.toLowerCase();
+  } catch { return ''; }
 }
 
 /* ================ tenant resolvers (RPC/DB) ================ */
@@ -129,16 +135,28 @@ async function resolveTenantByDomain({ domainLike, traceId }) {
     log('error', { traceId, where: 'tenant', msg: 'missing_supabase_env' });
     return null;
   }
-
   try {
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
-    const { data, error } = await admin.rpc('resolve_tenant', {
-      p_domain: String(domainLike || '').toLowerCase(),
-    });
+    const { data, error } = await admin.rpc('resolve_tenant', { p_domain: String(domainLike || '').toLowerCase() });
     if (error) throw error;
     return data || null; // [{ org_id, gas_endpoint, gas_token }] or null
   } catch (e) {
     log('error', { traceId, where: 'tenant', msg: 'resolve_domain_failed', err: String(e) });
+    return null;
+  }
+}
+
+async function resolveTenantBySlug({ slug, traceId }) {
+  const SUPABASE_URL = process.env.SUPABASE_URL;
+  const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) return null;
+  try {
+    const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
+    const { data, error } = await admin.rpc('resolve_tenant_by_slug', { p_slug: String(slug || '').toLowerCase() });
+    if (error) throw error;
+    return data || null;
+  } catch (e) {
+    log('error', { traceId, where: 'tenant', msg: 'resolve_slug_failed', err: String(e) });
     return null;
   }
 }
@@ -152,7 +170,7 @@ async function resolveTenantByEmail({ email, traceId }) {
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
     const { data, error } = await admin.rpc('resolve_tenant_by_email', { p_email: String(email || '').toLowerCase() });
     if (error) throw error;
-    return data || null; // [{ org_id, gas_endpoint, gas_token }] or null
+    return data || null;
   } catch (e) {
     log('error', { traceId, where: 'tenant', msg: 'resolve_email_failed', err: String(e) });
     return null;
@@ -176,7 +194,7 @@ export default async function handler(req, res) {
 
   // ======== 必須ENV（DB版では Supabase だけ必須）========
   const SUPABASE_URL = process.env.SUPABASE_URL;
-  const SUPABASE_ANON = process.env.SUPABASE_ANON; // 任意：Bearer検証をするなら必要
+  const SUPABASE_ANON = process.env.SUPABASE_ANON; // 任意：Bearer検証
   const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 
   const miss = [];
@@ -188,8 +206,6 @@ export default async function handler(req, res) {
   }
 
   // ======== 認証（任意）========
-  // Hostベースでテナント解決するため、Bearerが無くても進行可能。
-  // 付与されていれば Supabase で検証し、メールドメインを fallback に使う。
   let userEmail = '', userDomainFromToken = '';
   const authz = String(req.headers?.authorization || '');
   if (/^Bearer\s+.+/i.test(authz) && SUPABASE_ANON) {
@@ -203,7 +219,6 @@ export default async function handler(req, res) {
       }
     } catch (e) {
       log('error', { traceId, where: 'auth', msg: 'supabase_error', err: String(e) });
-      // 続行（Host/Hint 解決で処理可能）
     }
   }
 
@@ -211,33 +226,29 @@ export default async function handler(req, res) {
   const body = parseBody(req);
   const action = body?.action;
   const payload = body?.payload ?? {};
-  if (!action || typeof action !== 'string') {
-    return badRequest(res, traceId, 'missing_action');
-  }
+  if (!action || typeof action !== 'string') return badRequest(res, traceId, 'missing_action');
 
   const validator = ACTION_VALIDATORS[action];
   if (!validator) return badRequest(res, traceId, 'invalid_action', { action });
 
   try {
     const str = typeof payload === 'string' ? payload : JSON.stringify(payload);
-    if (str && str.length > MAX_PAYLOAD_BYTES) {
-      return payloadTooLarge(res, traceId, str.length);
-    }
-  } catch {
-    return badRequest(res, traceId, 'invalid_payload_nonserializable');
-  }
+    if (str && str.length > MAX_PAYLOAD_BYTES) return payloadTooLarge(res, traceId, str.length);
+  } catch { return badRequest(res, traceId, 'invalid_payload_nonserializable'); }
 
   let valid = false;
   try { valid = !!validator(payload); } catch { valid = false; }
   if (!valid) return badRequest(res, traceId, 'invalid_payload_shape', { action });
 
-  // ======== テナント解決：X-Tenant-Id → Host → Email ========
+  // ======== テナント解決：X-Tenant-Id → X-Tenant-Slug → /:slug → Host → Email ========
   const host = requestHost(req);
   const hintedTenantId = requestTenantId(req);
+  const hintedSlug = requestTenantSlug(req);
+  const pathSlug = requestSlugFromPath(req);
 
   let tenant = null;
 
-  // (A) ヒント優先：X-Tenant-Id（UUID）を使う
+  // (A) ヒント：X-Tenant-Id（UUID）
   if (hintedTenantId) {
     try {
       const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
@@ -247,20 +258,28 @@ export default async function handler(req, res) {
         .eq('org_id', hintedTenantId)
         .limit(1)
         .maybeSingle();
-      if (!error && data) {
-        tenant = [data]; // 後段の「配列→先頭取り」に合わせる
-      }
+      if (!error && data) tenant = [data];
     } catch (e) {
       log('error', { traceId, where: 'tenant', msg: 'hint_lookup_failed', err: String(e) });
     }
   }
 
-  // (B) Host で解決（未決なら）
+  // (B) ヒント：X-Tenant-Slug
+  if (!tenant && hintedSlug) {
+    tenant = await resolveTenantBySlug({ slug: hintedSlug, traceId });
+  }
+
+  // (C) URL 先頭 /:slug
+  if (!tenant && pathSlug) {
+    tenant = await resolveTenantBySlug({ slug: pathSlug, traceId });
+  }
+
+  // (D) Host（独自ドメイン）
   if (!tenant) {
     tenant = await resolveTenantByDomain({ domainLike: host, traceId });
   }
 
-  // (C) メールドメインで解決（まだ未決なら & emailが取れていれば）
+  // (E) Email ドメイン fallback（任意）
   if ((!tenant || !tenant.length) && userEmail) {
     tenant = await resolveTenantByEmail({ email: userEmail, traceId });
   }
@@ -268,7 +287,7 @@ export default async function handler(req, res) {
   const tenantRow = Array.isArray(tenant) && tenant.length ? tenant[0] : null;
 
   if (!tenantRow) {
-    log('error', { traceId, where: 'tenant', msg: 'tenant_not_found', host, userDomainFromToken, hintedTenantId });
+    log('error', { traceId, where: 'tenant', msg: 'tenant_not_found', host, hintedSlug, pathSlug, userDomainFromToken });
     res.setHeader('X-Debug-Host', host);
     res.setHeader('X-Tenant-Id', '');
     res.setHeader('X-GAS-Endpoint', '');
@@ -278,25 +297,17 @@ export default async function handler(req, res) {
   const TARGET_ENDPOINT = tenantRow.gas_endpoint;
   const TARGET_TOKEN = tenantRow.gas_token;
 
-  // 観測ヘッダ（検証中に便利。運用安定後に削除可）
+  // デバッグ用ヘッダ
   res.setHeader('X-Tenant-Id', tenantRow.org_id || '');
   res.setHeader('X-GAS-Endpoint', TARGET_ENDPOINT || '');
 
   // ======== GASへ中継（x-www-form-urlencoded）========
   try {
-    log('info', {
-      traceId,
-      where: 'forward',
-      action,
-      tenantId: tenantRow?.org_id || null,
-      host,
-      userEmail,
-      env: GAS_ENV
-    });
+    log('info', { traceId, where: 'forward', action, tenantId: tenantRow?.org_id || null, host, userEmail, env: GAS_ENV });
 
     const params = new URLSearchParams();
     params.set('action', String(action));
-    params.set('token', TARGET_TOKEN || ''); // DBの token を使用（将来は Authorization ヘッダに移行可）
+    params.set('token', TARGET_TOKEN || '');
     params.set('env', GAS_ENV);
     params.set('traceId', traceId);
     if (tenantRow?.org_id) params.set('tenantId', tenantRow.org_id);
@@ -311,7 +322,6 @@ export default async function handler(req, res) {
     const text = await r.text();
     const ct = r.headers.get('content-type') || 'text/plain; charset=utf-8';
 
-    // GASが {ok:false,error} を返してきたらHTTPへ昇格
     let maybeJson;
     if (ct.includes('application/json')) {
       try { maybeJson = JSON.parse(text); } catch { /* noop */ }
@@ -335,13 +345,7 @@ export default async function handler(req, res) {
     setTraceHeaders(res, traceId);
     return res.status(outStatus).send(outBody);
   } catch (e) {
-    log('error', {
-      traceId,
-      where: 'forward_catch',
-      msg: 'fetch_to_gas_failed',
-      err: String(e),
-      duration_ms: Date.now() - t0
-    });
+    log('error', { traceId, where: 'forward_catch', msg: 'fetch_to_gas_failed', err: String(e), duration_ms: Date.now() - t0 });
     setTraceHeaders(res, traceId);
     return res.status(502).json({ error: 'bad_gateway', traceId });
   }

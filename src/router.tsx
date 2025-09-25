@@ -1,6 +1,5 @@
-// src/router.tsx
 import React, { useEffect, useRef, useState } from "react";
-import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { supabase } from "./lib/supabase";
 import Login from "./pages/Login";
 import ResetPassword from "./pages/ResetPassword";
@@ -10,7 +9,7 @@ import AuthCallback from "./pages/AuthCallback";
 import SetPassword from "./pages/SetPassword";
 import App from "./App";
 
-// フロント用 許可ドメイン（空ならフロント側ガードは無効＝サーバ側だけで制御）
+// フロント用 許可ドメイン（空なら無効＝サーバ側だけで制御）
 const FRONT_ALLOWED = String(import.meta.env.VITE_ALLOWED_EMAIL_DOMAINS || "")
   .split(",")
   .map((s) => s.trim().toLowerCase())
@@ -22,12 +21,18 @@ function isAllowedDomain(email: string): boolean {
   return FRONT_ALLOWED.some((dom) => d === dom || d.endsWith("." + dom));
 }
 
-// 認証＋ドメインガード（/app など保護ルート専用）— 即リダイレクト版
+function useSlug() {
+  const { slug } = useParams();
+  return (slug || "").toLowerCase();
+}
+
+// 認証＋ドメインガード（保護ルート専用）
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
   const [forbidden, setForbidden] = useState(false);
   const loc = useLocation();
+  const slug = useSlug();
 
   const aliveRef = useRef(true);
   const timeoutRef = useRef<number | null>(null);
@@ -92,7 +97,12 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     supabase.auth.signOut().catch(() => {});
   }, [ready, forbidden]);
 
-  // 初回ロード中はローディング（ログイン画面へ即リダイレクトはしない）
+  // slug 未指定はログインへ（/app 直打ち防止）
+  if (!slug && loc.pathname.startsWith("/app")) {
+    return <Navigate to="/login" replace />;
+  }
+
+  // 初回ロード中
   if (!ready) {
     return (
       <main className="content">
@@ -116,7 +126,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 export default function Router() {
   return (
     <Routes>
-      {/* 直叩き・未知パスはログインへ */}
+      {/* 既定はログインへ */}
       <Route path="/" element={<Navigate to="/login" replace />} />
       <Route path="*" element={<Navigate to="/login" replace />} />
 
@@ -128,9 +138,9 @@ export default function Router() {
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/set-password" element={<SetPassword />} />
 
-      {/* 保護ルート */}
+      {/* 保護ルート：/:slug/app に統一 */}
       <Route
-        path="/app"
+        path="/:slug/app"
         element={
           <RequireAuth>
             <App />

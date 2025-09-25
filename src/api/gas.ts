@@ -1,4 +1,3 @@
-// src/api/gas.ts
 import { supabase } from '../lib/supabase';
 import type {
   UnansweredItem,
@@ -12,23 +11,19 @@ import type {
   BulkRunResult,
 } from '../types';
 
-/** フロント→サーバレス関数の基底URLを正規化（未設定なら /api、相対なら先頭に/付与、末尾/除去） ★追加 */
+/** フロント→サーバレス関数の基底URLを正規化（未設定なら /api） */
 function normalizeBase(v?: string): string {
   const raw = (v ?? "").trim();
   if (!raw) return "/api";
-  // フルURLはそのまま（末尾スラッシュだけ除去）
   if (/^https?:\/\//i.test(raw)) return raw.replace(/\/+$/, "");
-  // 相対指定（例: "api"）は必ず先頭スラッシュを付ける → "/api"
   const withLeading = raw.startsWith("/") ? raw : `/${raw}`;
   return withLeading.replace(/\/+$/, "");
 }
 
-/** フロント→サーバレス関数の基底URL（未設定なら /api） ★変更 */
 const API_BASE = normalizeBase(import.meta.env.VITE_API_BASE as string);
-/** GASエンドポイントURL（常に絶対パス or フルURLになる） ★変更 */
 const GAS_URL = `${API_BASE}/gas`;
 
-/** 相関IDの生成（ブラウザの crypto.randomUUID が無い環境に備えてフォールバック） */
+/** 相関IDの生成 */
 function newTraceId(): string {
   try {
     const anyCrypto = (globalThis as { crypto?: { randomUUID?: () => string } });
@@ -37,7 +32,7 @@ function newTraceId(): string {
   return `${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
 }
 
-/** テナントIDの取得（管理者のみ意味あり）。UIが選択した値を localStorage に保存しておく想定 */
+/** 管理用テナントID（任意） */
 function getTenantIdFromStorage(): string | undefined {
   try {
     const v = localStorage.getItem('tenantId');
@@ -47,7 +42,15 @@ function getTenantIdFromStorage(): string | undefined {
   }
 }
 
-/** 構造化APIエラー（UI側で traceId を表示できるようにする） */
+/** いまのURLから slug を取る（/okura/... → okura） */
+function currentSlug(): string | undefined {
+  try {
+    const seg = (location.pathname || '/').split('/').filter(Boolean)[0];
+    return seg ? seg.toLowerCase() : undefined;
+  } catch { return undefined; }
+}
+
+/** 構造化APIエラー */
 export class ApiError extends Error {
   code?: string;
   status?: number;
@@ -78,6 +81,11 @@ async function postJSON<T = unknown>(
     'Content-Type': 'application/json',
     'X-Trace-Id': traceId,
   };
+
+  // ★ 追加：URL 先頭の slug をサーバへ渡す
+  const slug = currentSlug();
+  if (slug) headers['X-Tenant-Slug'] = slug;
+
   if (token) headers.Authorization = `Bearer ${token}`;
   if (tenantId) headers['X-Tenant-Id'] = tenantId;
 
@@ -99,17 +107,10 @@ async function postJSON<T = unknown>(
         code = j?.error ?? undefined;
       }
     } catch {/* ignore */}
-
     const msg = code
       ? `APIエラー: ${code}（X-Trace-Id: ${respTraceId}）`
       : `APIエラー（HTTP ${res.status} / X-Trace-Id: ${respTraceId})`;
-
-    throw new ApiError(msg, {
-      code,
-      status: res.status,
-      traceId: respTraceId,
-      raw: text,
-    });
+    throw new ApiError(msg, { code, status: res.status, traceId: respTraceId, raw: text });
   }
 
   try {
@@ -129,86 +130,62 @@ function arr<T>(r: unknown): T[] {
 }
 
 /* ===================== wrappers ===================== */
-
 export async function getUnanswered(): Promise<UnansweredItem[]> {
   const r = await postJSON('getUnanswered');
   return arr<UnansweredItem>(r);
 }
-
 export async function getDrafts(): Promise<DraftItem[]> {
   const r = await postJSON('getDrafts');
   return arr<DraftItem>(r);
 }
-
 export async function getDetail(row: number): Promise<Detail> {
   const r = await postJSON<Detail>('getDetail', { row });
   return (r as { entry?: Detail }).entry ?? (r as Detail);
 }
-
 export async function saveAnswer(row: number, answer: string, url: string): Promise<boolean> {
   const r = await postJSON('saveAnswer', { row, answer, url });
   return r === true || (r as { ok?: boolean })?.ok === true;
 }
-
 export async function completeFromWeb(row: number): Promise<boolean> {
   const r = await postJSON('completeFromWeb', { row });
   return r === true || (r as { ok?: boolean })?.ok === true;
 }
-
 export async function noChangeFromWeb(row: number): Promise<boolean> {
   const r = await postJSON('noChangeFromWeb', { row });
   return r === true || (r as { ok?: boolean })?.ok === true;
 }
-
 export async function getHistoryList(): Promise<HistoryItem[]> {
   const r = await postJSON('getHistoryList');
   return arr<HistoryItem>(r);
 }
-
 export async function getHistoryDetail(row: number): Promise<HistoryDetail> {
   const r = await postJSON<HistoryDetail>('getHistoryDetail', { row });
   return (r as { entry?: HistoryDetail }).entry ?? (r as HistoryDetail);
 }
-
 export async function getAllTopicOptionsPinnedFirst(): Promise<string[]> {
   const r = await postJSON('getAllTopicOptionsPinnedFirst');
   if (Array.isArray(r)) return r as string[];
   return ((r as { items?: string[] })?.items) || [];
 }
-
 export async function getUpdateData(opt: {
-  q?: string;
-  topicKey?: string;
-  topics?: string[];
-  area?: string;
-  limit?: number;
-  offset?: number;
-  pinnedFirst?: boolean;
+  q?: string; topicKey?: string; topics?: string[]; area?: string;
+  limit?: number; offset?: number; pinnedFirst?: boolean;
 }): Promise<UpdateItem[]> {
   const r = await postJSON('getUpdateData', opt);
   return arr<UpdateItem>(r);
 }
-
-export async function saveUpdateRow(
-  row: number,
-  payload: { answer: string; url: string }
-): Promise<boolean> {
+export async function saveUpdateRow(row: number, payload: { answer: string; url: string }): Promise<boolean> {
   const r = await postJSON('saveUpdateRow', { row, payload });
   return r === true || (r as { ok?: boolean })?.ok === true;
 }
-
 export async function syncToMiibo(): Promise<boolean> {
   const r = await postJSON('syncToMiibo');
   return r === true || (r as { ok?: boolean })?.ok === true;
 }
-
-export async function bulkCompleteDrafts(
-  opt?: { dryRun?: boolean; limit?: number }
-): Promise<BulkDryResult | BulkRunResult> {
+export async function bulkCompleteDrafts(opt?: { dryRun?: boolean; limit?: number }): Promise<BulkDryResult | BulkRunResult> {
   const r = await postJSON('bulkCompleteDrafts', opt || {});
   return r as BulkDryResult | BulkRunResult;
 }
-
 export async function predictAnswerForRow(row: number): Promise<PredictResult> {
   const r = await postJSON<PredictResult>('predictAnswerForRow', { row });
   return (r as { result?: PredictResult }).result ?? (r as PredictResult);
