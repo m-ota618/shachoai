@@ -220,7 +220,7 @@ export default async function handler(req, res) {
     log('error', { traceId, where: 'tenant', msg: 'tenant_not_found', host, userDomainFromToken });
     res.setHeader('X-Tenant-Id', '');
     res.setHeader('X-GAS-Endpoint', '');
-    return res.status(403).json({ error: 'tenant_not_found', traceId });
+    return res.status(403).json({ error: 'tenant_not_found',host, traceId });
   }
 
   const TARGET_ENDPOINT = tenant.gas_endpoint;
