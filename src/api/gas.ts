@@ -82,12 +82,12 @@ async function postJSON<T = unknown>(
     'X-Trace-Id': traceId,
   };
 
-  // ★ 追加：URL 先頭の slug をサーバへ渡す
+  // ★ 追加：URL 先頭の slug をサーバへ渡す（安定テナント解決）
   const slug = currentSlug();
   if (slug) headers['X-Tenant-Slug'] = slug;
 
   if (token) headers.Authorization = `Bearer ${token}`;
-  if (tenantId) headers['X-Tenant-Id'] = tenantId;
+  if (tenantId) headers['X-Tenant-Id'] = tenantId; // 任意：冗長ヒント
 
   const res = await fetch(GAS_URL, {
     method: 'POST',

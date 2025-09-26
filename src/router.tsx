@@ -1,3 +1,4 @@
+// src/router.tsx
 import React, { useEffect, useRef, useState } from "react";
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { supabase } from "./lib/supabase";
@@ -8,6 +9,9 @@ import ForgotPassword from "./pages/ForgotPassword";
 import AuthCallback from "./pages/AuthCallback";
 import SetPassword from "./pages/SetPassword";
 import App from "./App";
+
+/* ★ 追加 */
+import AdminTenants from "./pages/AdminTenants";
 
 // フロント用 許可ドメイン（空ならフロント側ガードは無効＝サーバ側だけで制御）
 const FRONT_ALLOWED = String(import.meta.env.VITE_ALLOWED_EMAIL_DOMAINS || "")
@@ -137,7 +141,17 @@ export default function Router() {
         }
       />
 
-      {/* ★ 追加：DB版（slug 付き）— 既存ロジックは一切変更せず、同じ保護コンポーネント＆Appを再利用 */}
+      {/* ★ 追加：管理UI（テナント選択） */}
+      <Route
+        path="/admin/tenants"
+        element={
+          <RequireAuth>
+            <AdminTenants />
+          </RequireAuth>
+        }
+      />
+
+      {/* ★ 追加：DB版（slug付き）。既存ロジックはそのままに、同じ保護コンポーネント＆Appを再利用 */}
       <Route
         path="/:slug/app"
         element={
