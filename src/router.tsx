@@ -1,6 +1,6 @@
 // src/router.tsx
 import React, { useEffect, useRef, useState } from "react";
-import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom"; // ← useNavigate を追加
 import { supabase } from "./lib/supabase";
 import Login from "./pages/Login";
 import ResetPassword from "./pages/ResetPassword";
@@ -31,6 +31,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   const [signedIn, setSignedIn] = useState(false);
   const [forbidden, setForbidden] = useState(false);
   const loc = useLocation();
+  const navigate = useNavigate(); // ← 追加
 
   const aliveRef = useRef(true);
   const timeoutRef = useRef<number | null>(null);
@@ -124,16 +125,16 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 
       if (list.length > 1) {
         // 管理者：テナント選択画面へ
-        window.history.replaceState(null, "", "/admin/tenants");
+        navigate("/admin/tenants", { replace: true }); // ← 変更
       } else if (list.length === 1) {
         // 一般：自社slugへ
-        window.history.replaceState(null, "", `/${list[0].slug}/app`);
+        navigate(`/${list[0].slug}/app`, { replace: true }); // ← 変更
       } else {
         // 未所属：ログインへ（必要に応じて案内ページに変更可）
-        window.history.replaceState(null, "", "/login");
+        navigate("/login", { replace: true }); // ← 変更
       }
     })();
-  }, [ready, signedIn, loc.pathname]); // ★ pathname を依存に追加
+  }, [ready, signedIn, loc.pathname, navigate]); // ← navigate を依存に追加
 
   // 初回ロード中はローディング（ログイン画面へ即リダイレクトはしない）
   if (!ready) {

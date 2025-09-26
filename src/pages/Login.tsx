@@ -28,8 +28,21 @@ export default function Login() {
     try {
       const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
       if (error) { setMsg(`ログイン失敗：${error.message}`); return; }
-      // 成功時は常に /app へ遷移
-      nav("/app", { replace: true });
+
+      // ★ ここだけ変更：所属テナント数で遷移先を出し分ける
+      const { data, error: rpcErr } = await supabase.rpc("get_accessible_orgs");
+      const list = (!rpcErr ? (data as { slug: string }[] | null) : null) ?? [];
+
+      if (list.length > 1) {
+        // 管理者相当（複数テナントにアクセス可）→ 管理UIへ
+        nav("/admin/tenants", { replace: true });
+      } else if (list.length === 1) {
+        // 単一テナント → そのテナントの /app
+        nav(`/${list[0].slug}/app`, { replace: true });
+      } else {
+        // 未所属 or 取得失敗 → フォールバック
+        nav("/app", { replace: true });
+      }
     } catch (e: any) {
       setMsg(`ログイン失敗：${e?.message ?? "不明なエラー"}`);
     } finally {
