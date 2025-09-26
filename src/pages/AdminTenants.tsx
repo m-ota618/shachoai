@@ -1,40 +1,124 @@
 // src/pages/AdminTenants.tsx
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "../lib/supabase"; // ← pages からは必ず ../lib
+import { supabase } from "../lib/supabase";
 
 type OrgRow = { id: string; name: string; slug: string };
 
 export default function AdminTenants() {
   const [list, setList] = useState<OrgRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
   const nav = useNavigate();
 
-  useEffect(() => {
-    (async () => {
+  const load = async () => {
+    setErr(null);
+    setLoading(true);
+    try {
       const { data, error } = await supabase.rpc("get_accessible_orgs");
-      if (!error) setList((data as OrgRow[]) ?? []);
+      if (error) throw error;
+      setList((data as OrgRow[]) ?? []);
+    } catch (e: any) {
+      setErr(e?.message ?? "読み込みに失敗しました。");
+      setList([]);
+    } finally {
       setLoading(false);
-    })();
-  }, []);
+    }
+  };
 
-  if (loading) return <main className="p-6">読み込み中…</main>;
+  useEffect(() => { load(); }, []);
+
+  const go = (slug: string) => nav(`/${slug}/app`, { replace: true });
 
   return (
-    <main className="p-6 space-y-3">
-      <h1 className="text-xl font-bold">テナントを選択</h1>
-      <ul className="space-y-2">
-        {list.map((org) => (
-          <li key={org.id}>
+    <>
+      {/* Loginと同じロゴヘッダー */}
+      <header className="app-header" role="banner">
+        <img src="/planter-lockup.svg" alt="Planter" className="brand-lockup" />
+        <div className="app-header-divider" />
+      </header>
+
+      <main className="auth-center">
+        <section className="auth-card" aria-labelledby="tenantTitle">
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+            <h2 id="tenantTitle" className="auth-card-title">テナントを選択</h2>
             <button
-              className="px-4 py-2 rounded bg-black text-white"
-              onClick={() => nav(`/${org.slug}/app`)} // ← 行き先は /app に統一
+              type="button"
+              className="btn btn-secondary"
+              onClick={load}
+              aria-label="再読み込み"
             >
-              {org.name}（/{org.slug}）
+              再読み込み
             </button>
-          </li>
-        ))}
-      </ul>
-    </main>
+          </div>
+
+          {/* 状態表示 */}
+          {loading && (
+            <div className="skeleton" style={{ marginTop: 10 }}>読み込み中...</div>
+          )}
+
+          {err && !loading && (
+            <div role="alert" className="auth-alert err" style={{ marginTop: 10 }}>
+              {err}
+            </div>
+          )}
+
+          {!loading && !err && list.length === 0 && (
+            <div className="empty" style={{ marginTop: 6 }}>
+              表示できるテナントがありません。
+              <div className="help" style={{ marginTop: 6 }}>
+                管理者のはずなのに表示されない場合は
+                <code style={{ margin: "0 4px" }}>get_is_admin()</code> /
+                <code style={{ margin: "0 4px" }}>get_accessible_orgs()</code> の実装と権限をご確認ください。
+              </div>
+            </div>
+          )}
+
+          {/* 一覧 */}
+          {!loading && !err && list.length > 0 && (
+            <ul
+              className="cards"
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+                gap: 12,
+                marginTop: 12,
+                listStyle: "none",
+                padding: 0
+              }}
+            >
+              {list.map((org) => (
+                <li key={org.id}>
+                  <div
+                    className="card"
+                    tabIndex={0}
+                    role="button"
+                    onClick={() => go(org.slug)}
+                    onKeyDown={(e) => { if (e.key === "Enter") go(org.slug); }}
+                    aria-label={`${org.name} を開く`}
+                    style={{ cursor: "pointer" }}
+                  >
+                    <div className="q" style={{ marginBottom: 6 }}>{org.name}</div>
+                    <div className="meta" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span className="badge badge-light">/{org.slug}</span>
+                    </div>
+                    <div style={{ marginTop: 10 }}>
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={(e) => { e.stopPropagation(); go(org.slug); }}
+                        aria-label={`${org.name} のテナントに入る`}
+                      >
+                        このテナントに入る
+                      </button>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </main>
+    </>
   );
 }
