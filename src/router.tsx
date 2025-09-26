@@ -25,7 +25,7 @@ function isAllowedDomain(email: string): boolean {
   return FRONT_ALLOWED.some((dom) => d === dom || d.endsWith("." + dom));
 }
 
-// 認証＋ドメインガード（/app など保護ルート専用）— 即リダイレクト版
+// 認証＋ドメインガード（/app など保護ルート専用）
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
@@ -75,6 +75,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
       }
     });
 
+    // フォールバック保険（ロードが長引いてもUIを動かす）
     timeoutRef.current = window.setTimeout(() => {
       if (!aliveRef.current) return;
       setReady((prev) => prev || true);
@@ -90,19 +91,20 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // 許可ドメイン外はサインアウトしてログインへ
   useEffect(() => {
     if (!ready || !forbidden) return;
     supabase.auth.signOut().catch(() => {});
   }, [ready, forbidden]);
 
-  /* ★ 修正：slugなしで来た場合の自動誘導（/admin 配下はスキップ） */
+  /* ★ 自動誘導：/admin 配下は完全スキップ（ここが肝） */
   useEffect(() => {
     if (!ready || !signedIn) return;
 
     const pathname = loc.pathname || "/";
 
-    // ★ 追加：/admin 配下では自動リダイレクトを完全にスキップ
-    if (pathname.startsWith("/admin/")) return;
+    // /admin 直下 or /admin/... は自動リダイレクト一切禁止
+    if (pathname === "/admin" || pathname.startsWith("/admin/")) return;
 
     const seg = pathname.split("/").filter(Boolean);
     const first = seg[0] || "";
@@ -137,7 +139,9 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   if (!ready) {
     return (
       <main className="content">
-        <div className="wrap"><div className="skeleton">認証状態を確認中...</div></div>
+        <div className="wrap">
+          <div className="skeleton">認証状態を確認中...</div>
+        </div>
       </main>
     );
   }
@@ -157,9 +161,8 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 export default function Router() {
   return (
     <Routes>
-      {/* 直叩き・未知パスはログインへ */}
+      {/* 直叩きトップはログインへ */}
       <Route path="/" element={<Navigate to="/login" replace />} />
-      <Route path="*" element={<Navigate to="/login" replace />} />
 
       {/* 公開ルート */}
       <Route path="/login" element={<Login />} />
@@ -169,17 +172,7 @@ export default function Router() {
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/set-password" element={<SetPassword />} />
 
-      {/* 保護ルート（既存） */}
-      <Route
-        path="/app"
-        element={
-          <RequireAuth>
-            <App />
-          </RequireAuth>
-        }
-      />
-
-      {/* 管理UI（テナント選択） */}
+      {/* 管理UI（テナント選択）— /admin は自動誘導の対象外 */}
       <Route
         path="/admin/tenants"
         element={
@@ -189,7 +182,17 @@ export default function Router() {
         }
       />
 
-      {/* DB版（slug付き）— 既存ロジックは変更せず同じ保護コンポーネント＆Appを再利用 */}
+      {/* 保護ルート（slugなし） */}
+      <Route
+        path="/app"
+        element={
+          <RequireAuth>
+            <App />
+          </RequireAuth>
+        }
+      />
+
+      {/* DB版（slug付き） */}
       <Route
         path="/:slug/app"
         element={
@@ -198,6 +201,9 @@ export default function Router() {
           </RequireAuth>
         }
       />
+
+      {/* ★ ワイルドカードは雑リダイレクトしない（/admin を誤吸収させない） */}
+      <Route path="*" element={<div>404</div>} />
     </Routes>
   );
 }
