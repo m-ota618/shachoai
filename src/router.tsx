@@ -8,9 +8,8 @@ import Signup from "./pages/Signup";
 import ForgotPassword from "./pages/ForgotPassword";
 import AuthCallback from "./pages/AuthCallback";
 import SetPassword from "./pages/SetPassword";
-import App from "./App";
-// ★ ダミー診断のため import は使わない（コメントアウト可）
-// import AdminTenants from "./pages/AdminTenants";
+// 診断のため App は一時無効化（内部の強制ナビ影響を遮断）
+/* import App from "./App"; */
 
 // フロント用 許可ドメイン（空ならフロント側ガードは無効）
 const FRONT_ALLOWED = String(import.meta.env.VITE_ALLOWED_EMAIL_DOMAINS || "")
@@ -22,6 +21,18 @@ function isAllowedDomain(email: string): boolean {
   if (!FRONT_ALLOWED.length) return true;
   const d = (email.toLowerCase().split("@")[1] || "").trim();
   return FRONT_ALLOWED.some((dom) => d === dom || d.endsWith("." + dom));
+}
+
+// ---- 診断用ダミー App ----
+function AppDummy() {
+  return (
+    <div
+      id="APP_DUMMY_PING_v1"
+      style={{ padding: 24, fontWeight: 800, fontSize: 28, letterSpacing: 1 }}
+    >
+      APP DUMMY PING v1
+    </div>
+  );
 }
 
 // 認証＋ドメインガード
@@ -96,7 +107,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     supabase.auth.signOut().catch(() => {});
   }, [ready, forbidden]);
 
-  // 自動誘導：/admin は完全スキップ（ここが肝）
+  // 自動誘導：/admin は完全スキップ
   useEffect(() => {
     if (!ready || !signedIn) return;
 
@@ -149,60 +160,76 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 
 export default function Router() {
   return (
-    <Routes>
-      {/* トップはログインへ */}
-      <Route path="/" element={<Navigate to="/login" replace />} />
+    <>
+      {/* ★ どの画面でも常に出る診断オーバーレイ（この行が見えなければ、このRouter自体が読まれていない） */}
+      <div
+        id="ROUTER_PING_v1"
+        style={{
+          position: "fixed",
+          top: 6,
+          right: 6,
+          zIndex: 99999,
+          background: "#222",
+          color: "#fff",
+          padding: "4px 8px",
+          borderRadius: 6,
+          fontSize: 12,
+          fontWeight: 700,
+        }}
+      >
+        ROUTER PING v1
+      </div>
 
-      {/* 公開ルート */}
-      <Route path="/login" element={<Login />} />
-      <Route path="/signup" element={<Signup />} />
-      <Route path="/auth" element={<AuthCallback />} />
-      <Route path="/forgot-password" element={<ForgotPassword />} />
-      <Route path="/reset-password" element={<ResetPassword />} />
-      <Route path="/set-password" element={<SetPassword />} />
+      <Routes>
+        {/* トップはログインへ */}
+        <Route path="/" element={<Navigate to="/login" replace />} />
 
-      {/* ★ ダミー診断：/admin/tenants は必ず PING を出す */}
-      <Route
-        path="/admin/tenants"
-        element={
-          <RequireAuth>
-            <div
-              id="ADMIN_TENANTS_PING"
-              style={{
-                padding: 24,
-                fontWeight: 800,
-                fontSize: 28,
-                letterSpacing: 1,
-              }}
-            >
-              ADMIN TENANTS PING
-            </div>
-          </RequireAuth>
-        }
-      />
+        {/* 公開ルート */}
+        <Route path="/login" element={<Login />} />
+        <Route path="/signup" element={<Signup />} />
+        <Route path="/auth" element={<AuthCallback />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/set-password" element={<SetPassword />} />
 
-      {/* 保護ルート（slugなし） */}
-      <Route
-        path="/app"
-        element={
-          <RequireAuth>
-            <App />
-          </RequireAuth>
-        }
-      />
+        {/* ★ 診断：/admin/tenants は必ず PING を出す（App等は一切使わない） */}
+        <Route
+          path="/admin/tenants"
+          element={
+            <RequireAuth>
+              <div
+                id="ADMIN_TENANTS_PING_v1"
+                style={{ padding: 24, fontWeight: 800, fontSize: 28, letterSpacing: 1 }}
+              >
+                ADMIN TENANTS PING v1
+              </div>
+            </RequireAuth>
+          }
+        />
 
-      {/* DB版（slug付き） */}
-      <Route
-        path="/:slug/app"
-        element={
-          <RequireAuth>
-            <App />
-          </RequireAuth>
-        }
-      />
+        {/* 保護ルート（slugなし）— 診断のため App をダミーに */}
+        <Route
+          path="/app"
+          element={
+            <RequireAuth>
+              <AppDummy />
+            </RequireAuth>
+          }
+        />
 
-      {/* ワイルドカードは雑リダイレクト禁止（誤吸収防止） */}
-      <Route path="*" element={<div>404</div>} />
-    </Routes>
+        {/* DB版（slug付き）— 診断のため App をダミーに */}
+        <Route
+          path="/:slug/app"
+          element={
+            <RequireAuth>
+              <AppDummy />
+            </RequireAuth>
+          }
+        />
+
+        {/* ワイルドカードは雑リダイレクト禁止（誤吸収防止） */}
+        <Route path="*" element={<div>404</div>} />
+      </Routes>
+    </>
   );
 }
