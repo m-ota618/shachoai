@@ -95,11 +95,16 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     supabase.auth.signOut().catch(() => {});
   }, [ready, forbidden]);
 
-  /* ★ 追加：slugなしで来た場合の自動誘導（管理者→/admin/tenants、一般→/:slug/app） */
+  /* ★ 修正：slugなしで来た場合の自動誘導（/admin 配下はスキップ） */
   useEffect(() => {
     if (!ready || !signedIn) return;
 
-    const seg = (location.pathname || "/").split("/").filter(Boolean);
+    const pathname = loc.pathname || "/";
+
+    // ★ 追加：/admin 配下では自動リダイレクトを完全にスキップ
+    if (pathname.startsWith("/admin/")) return;
+
+    const seg = pathname.split("/").filter(Boolean);
     const first = seg[0] || "";
     const protectedWords = new Set(["admin", "login", "signup", "auth", "set-password"]);
     const hasSlug = seg.length >= 2 && !protectedWords.has(first);
@@ -126,7 +131,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
         window.history.replaceState(null, "", "/login");
       }
     })();
-  }, [ready, signedIn]);
+  }, [ready, signedIn, loc.pathname]); // ★ pathname を依存に追加
 
   // 初回ロード中はローディング（ログイン画面へ即リダイレクトはしない）
   if (!ready) {
