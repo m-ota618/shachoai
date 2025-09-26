@@ -9,11 +9,10 @@ import ForgotPassword from "./pages/ForgotPassword";
 import AuthCallback from "./pages/AuthCallback";
 import SetPassword from "./pages/SetPassword";
 import App from "./App";
+// ★ ダミー診断のため import は使わない（コメントアウト可）
+// import AdminTenants from "./pages/AdminTenants";
 
-/* ★ 追加済み */
-import AdminTenants from "./pages/AdminTenants";
-
-// フロント用 許可ドメイン（空ならフロント側ガードは無効＝サーバ側だけで制御）
+// フロント用 許可ドメイン（空ならフロント側ガードは無効）
 const FRONT_ALLOWED = String(import.meta.env.VITE_ALLOWED_EMAIL_DOMAINS || "")
   .split(",")
   .map((s) => s.trim().toLowerCase())
@@ -25,7 +24,7 @@ function isAllowedDomain(email: string): boolean {
   return FRONT_ALLOWED.some((dom) => d === dom || d.endsWith("." + dom));
 }
 
-// 認証＋ドメインガード（/app など保護ルート専用）
+// 認証＋ドメインガード
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
@@ -75,7 +74,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
       }
     });
 
-    // フォールバック保険（ロードが長引いてもUIを動かす）
+    // 保険：長時間でもUIを進める
     timeoutRef.current = window.setTimeout(() => {
       if (!aliveRef.current) return;
       setReady((prev) => prev || true);
@@ -91,57 +90,47 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // 許可ドメイン外はサインアウトしてログインへ
+  // 許可ドメイン外はサインアウト
   useEffect(() => {
     if (!ready || !forbidden) return;
     supabase.auth.signOut().catch(() => {});
   }, [ready, forbidden]);
 
-  /* ★ 自動誘導：/admin 配下は完全スキップ（ここが肝） */
+  // 自動誘導：/admin は完全スキップ（ここが肝）
   useEffect(() => {
     if (!ready || !signedIn) return;
 
     const pathname = loc.pathname || "/";
-
-    // /admin 直下 or /admin/... は自動リダイレクト一切禁止
     if (pathname === "/admin" || pathname.startsWith("/admin/")) return;
 
     const seg = pathname.split("/").filter(Boolean);
     const first = seg[0] || "";
     const protectedWords = new Set(["admin", "login", "signup", "auth", "set-password"]);
     const hasSlug = seg.length >= 2 && !protectedWords.has(first);
-    // 例: /app -> ["app"] => hasSlug=false
-    //     /okura/app -> ["okura","app"] => hasSlug=true
-    //     /admin/tenants -> ["admin","tenants"] => hasSlug=false（管理UIは別扱い）
 
     (async () => {
-      if (hasSlug) return; // すでに /:slug/... にいる
+      if (hasSlug) return;
 
       const { data, error } = await supabase.rpc("get_accessible_orgs");
-      if (error) return; // 失敗時は既存挙動維持
+      if (error) return;
 
       const list = (data as { slug: string }[]) || [];
 
       if (list.length > 1) {
-        // 管理者：テナント選択画面へ
         window.history.replaceState(null, "", "/admin/tenants");
       } else if (list.length === 1) {
-        // 一般：自社slugへ
         window.history.replaceState(null, "", `/${list[0].slug}/app`);
       } else {
-        // 未所属：ログインへ（必要に応じて案内ページに変更可）
         window.history.replaceState(null, "", "/login");
       }
     })();
-  }, [ready, signedIn, loc.pathname]); // ★ pathname を依存に追加
+  }, [ready, signedIn, loc.pathname]);
 
-  // 初回ロード中はローディング（ログイン画面へ即リダイレクトはしない）
+  // ローディング
   if (!ready) {
     return (
       <main className="content">
-        <div className="wrap">
-          <div className="skeleton">認証状態を確認中...</div>
-        </div>
+        <div className="wrap"><div className="skeleton">認証状態を確認中...</div></div>
       </main>
     );
   }
@@ -161,7 +150,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 export default function Router() {
   return (
     <Routes>
-      {/* 直叩きトップはログインへ */}
+      {/* トップはログインへ */}
       <Route path="/" element={<Navigate to="/login" replace />} />
 
       {/* 公開ルート */}
@@ -172,12 +161,22 @@ export default function Router() {
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/set-password" element={<SetPassword />} />
 
-      {/* 管理UI（テナント選択）— /admin は自動誘導の対象外 */}
+      {/* ★ ダミー診断：/admin/tenants は必ず PING を出す */}
       <Route
         path="/admin/tenants"
         element={
           <RequireAuth>
-            <AdminTenants />
+            <div
+              id="ADMIN_TENANTS_PING"
+              style={{
+                padding: 24,
+                fontWeight: 800,
+                fontSize: 28,
+                letterSpacing: 1,
+              }}
+            >
+              ADMIN TENANTS PING
+            </div>
           </RequireAuth>
         }
       />
@@ -202,7 +201,7 @@ export default function Router() {
         }
       />
 
-      {/* ★ ワイルドカードは雑リダイレクトしない（/admin を誤吸収させない） */}
+      {/* ワイルドカードは雑リダイレクト禁止（誤吸収防止） */}
       <Route path="*" element={<div>404</div>} />
     </Routes>
   );
