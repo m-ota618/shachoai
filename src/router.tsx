@@ -8,10 +8,10 @@ import Signup from "./pages/Signup";
 import ForgotPassword from "./pages/ForgotPassword";
 import AuthCallback from "./pages/AuthCallback";
 import SetPassword from "./pages/SetPassword";
-// 診断のため App は一時無効化（内部の強制ナビ影響を遮断）
-/* import App from "./App"; */
+import App from "./App";
+import AdminTenants from "./pages/AdminTenants";
 
-// フロント用 許可ドメイン（空ならフロント側ガードは無効）
+// フロント側 許可ドメイン（空なら無効）
 const FRONT_ALLOWED = String(import.meta.env.VITE_ALLOWED_EMAIL_DOMAINS || "")
   .split(",")
   .map((s) => s.trim().toLowerCase())
@@ -21,18 +21,6 @@ function isAllowedDomain(email: string): boolean {
   if (!FRONT_ALLOWED.length) return true;
   const d = (email.toLowerCase().split("@")[1] || "").trim();
   return FRONT_ALLOWED.some((dom) => d === dom || d.endsWith("." + dom));
-}
-
-// ---- 診断用ダミー App ----
-function AppDummy() {
-  return (
-    <div
-      id="APP_DUMMY_PING_v1"
-      style={{ padding: 24, fontWeight: 800, fontSize: 28, letterSpacing: 1 }}
-    >
-      APP DUMMY PING v1
-    </div>
-  );
 }
 
 // 認証＋ドメインガード
@@ -85,7 +73,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
       }
     });
 
-    // 保険：長時間でもUIを進める
+    // ローディング保険
     timeoutRef.current = window.setTimeout(() => {
       if (!aliveRef.current) return;
       setReady((prev) => prev || true);
@@ -107,7 +95,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     supabase.auth.signOut().catch(() => {});
   }, [ready, forbidden]);
 
-  // 自動誘導：/admin は完全スキップ
+  // 自動誘導（/admin は完全スキップ）
   useEffect(() => {
     if (!ready || !signedIn) return;
 
@@ -120,7 +108,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     const hasSlug = seg.length >= 2 && !protectedWords.has(first);
 
     (async () => {
-      if (hasSlug) return;
+      if (hasSlug) return; // 既に /:slug/... にいる
 
       const { data, error } = await supabase.rpc("get_accessible_orgs");
       if (error) return;
@@ -128,10 +116,13 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
       const list = (data as { slug: string }[]) || [];
 
       if (list.length > 1) {
+        // 複数所属 → テナント選択
         window.history.replaceState(null, "", "/admin/tenants");
       } else if (list.length === 1) {
+        // 単一所属 → 自社 slug へ
         window.history.replaceState(null, "", `/${list[0].slug}/app`);
       } else {
+        // 未所属 → ログインへ
         window.history.replaceState(null, "", "/login");
       }
     })();
@@ -160,76 +151,50 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 
 export default function Router() {
   return (
-    <>
-      {/* ★ どの画面でも常に出る診断オーバーレイ（この行が見えなければ、このRouter自体が読まれていない） */}
-      <div
-        id="ROUTER_PING_v1"
-        style={{
-          position: "fixed",
-          top: 6,
-          right: 6,
-          zIndex: 99999,
-          background: "#222",
-          color: "#fff",
-          padding: "4px 8px",
-          borderRadius: 6,
-          fontSize: 12,
-          fontWeight: 700,
-        }}
-      >
-        ROUTER PING v1
-      </div>
+    <Routes>
+      {/* 直叩きトップはログインへ */}
+      <Route path="/" element={<Navigate to="/login" replace />} />
 
-      <Routes>
-        {/* トップはログインへ */}
-        <Route path="/" element={<Navigate to="/login" replace />} />
+      {/* 公開ルート */}
+      <Route path="/login" element={<Login />} />
+      <Route path="/signup" element={<Signup />} />
+      <Route path="/auth" element={<AuthCallback />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/set-password" element={<SetPassword />} />
 
-        {/* 公開ルート */}
-        <Route path="/login" element={<Login />} />
-        <Route path="/signup" element={<Signup />} />
-        <Route path="/auth" element={<AuthCallback />} />
-        <Route path="/forgot-password" element={<ForgotPassword />} />
-        <Route path="/reset-password" element={<ResetPassword />} />
-        <Route path="/set-password" element={<SetPassword />} />
+      {/* 管理UI（/admin は自動誘導対象外） */}
+      <Route
+        path="/admin/tenants"
+        element={
+          <RequireAuth>
+            <AdminTenants />
+          </RequireAuth>
+        }
+      />
 
-        {/* ★ 診断：/admin/tenants は必ず PING を出す（App等は一切使わない） */}
-        <Route
-          path="/admin/tenants"
-          element={
-            <RequireAuth>
-              <div
-                id="ADMIN_TENANTS_PING_v1"
-                style={{ padding: 24, fontWeight: 800, fontSize: 28, letterSpacing: 1 }}
-              >
-                ADMIN TENANTS PING v1
-              </div>
-            </RequireAuth>
-          }
-        />
+      {/* 保護ルート（slugなし） */}
+      <Route
+        path="/app"
+        element={
+          <RequireAuth>
+            <App />
+          </RequireAuth>
+        }
+      />
 
-        {/* 保護ルート（slugなし）— 診断のため App をダミーに */}
-        <Route
-          path="/app"
-          element={
-            <RequireAuth>
-              <AppDummy />
-            </RequireAuth>
-          }
-        />
+      {/* DB版（slug付き） */}
+      <Route
+        path="/:slug/app"
+        element={
+          <RequireAuth>
+            <App />
+          </RequireAuth>
+        }
+      />
 
-        {/* DB版（slug付き）— 診断のため App をダミーに */}
-        <Route
-          path="/:slug/app"
-          element={
-            <RequireAuth>
-              <AppDummy />
-            </RequireAuth>
-          }
-        />
-
-        {/* ワイルドカードは雑リダイレクト禁止（誤吸収防止） */}
-        <Route path="*" element={<div>404</div>} />
-      </Routes>
-    </>
+      {/* ワイルドカードは 404（誤吸収防止） */}
+      <Route path="*" element={<div>404</div>} />
+    </Routes>
   );
 }
