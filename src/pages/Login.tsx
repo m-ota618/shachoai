@@ -13,7 +13,7 @@ export default function Login() {
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // ルーターガード（RequireAuth）からの理由付リダイレクトを拾う
+  // （必要なら）他画面からの理由付リダイレクト表示
   const reason = (loc.state as any)?.reason as string | undefined;
   useEffect(() => {
     if (reason === "forbidden_domain") {
@@ -29,18 +29,26 @@ export default function Login() {
       const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
       if (error) { setMsg(`ログイン失敗：${error.message}`); return; }
 
-      // ★ ここだけ変更：所属テナント数で遷移先を出し分ける
+      // ★ まず管理者かどうか（= @starbasket-ai.com）を判定
+      let isAdmin = false;
+      try {
+        const r = await supabase.rpc("get_is_admin");
+        isAdmin = !!r.data;
+      } catch {
+        // 失敗時は非管理者扱いで続行
+      }
+      if (isAdmin) {
+        nav("/admin/tenants", { replace: true });
+        return;
+      }
+
+      // ★ 非管理者は所属テナントへ
       const { data, error: rpcErr } = await supabase.rpc("get_accessible_orgs");
       const list = (!rpcErr ? (data as { slug: string }[] | null) : null) ?? [];
-
-      if (list.length > 1) {
-        // 管理者相当（複数テナントにアクセス可）→ 管理UIへ
-        nav("/admin/tenants", { replace: true });
-      } else if (list.length === 1) {
-        // 単一テナント → そのテナントの /app
+      if (list.length === 1) {
         nav(`/${list[0].slug}/app`, { replace: true });
       } else {
-        // 未所属 or 取得失敗 → フォールバック
+        // 未所属や取得失敗時のフォールバック
         nav("/app", { replace: true });
       }
     } catch (e: any) {
