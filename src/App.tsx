@@ -97,6 +97,17 @@ const backoff = (n: number) => {
   return secs * 1000;
 };
 
+/* =========================
+   ゴーストカード用：送信中／失敗管理
+   ========================= */
+const PENDING_KEY = 'planter/pendingRows/v1';
+const loadPending = (): number[] => {
+  try { return JSON.parse(localStorage.getItem(PENDING_KEY) || '[]'); } catch { return []; }
+};
+const savePending = (rows: number[]) => {
+  try { localStorage.setItem(PENDING_KEY, JSON.stringify(rows)); } catch {}
+};
+
 const hueFor = (s: string) => {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
@@ -218,6 +229,47 @@ function UrlListEditor(props: {
   );
 }
 
+/* =========================
+   ゴーストカードUIコンポーネント
+   ========================= */
+const Spinner: React.FC = () => <span className="spinner" aria-hidden />;
+
+const CardShell: React.FC<{
+  isPending?: boolean;
+  isFailed?: boolean;
+  onRetry?: () => void;
+  children?: React.ReactNode;
+}> = ({ isPending, isFailed, onRetry, children }) => {
+  if (isPending) {
+    return (
+      <div className="card pending" aria-live="polite">
+        <div className="row" style={{ alignItems: 'center', gap: 8 }}>
+          <Spinner />
+          <div className="q">送信中…</div>
+        </div>
+        <div className="meta">通信状況により数分かかることがあります</div>
+      </div>
+    );
+  }
+  if (isFailed) {
+    return (
+      <div className="card error" role="alert">
+        <div className="row" style={{ alignItems: 'center', gap: 8 }}>
+          <span className="badge badge-danger">失敗</span>
+          <div className="q">転送に失敗しました</div>
+          {onRetry && (
+            <button className="btn btn-secondary" onClick={onRetry} style={{ marginLeft: 'auto' }}>
+              再試行
+            </button>
+          )}
+        </div>
+        <div className="help">ネットワーク状況を確認して再実行してください</div>
+      </div>
+    );
+  }
+  return <div className="card">{children}</div>;
+};
+
 export default function App() {
   const [tab, setTab] = useState<Tab>('unans');
 
@@ -328,14 +380,42 @@ export default function App() {
      ========================= */
   const [opQueue, setOpQueue] = useState<QueuedOp[]>(() => loadQueue());
   const flushingRef = useRef(false);
-
   useEffect(() => { saveQueue(opQueue); }, [opQueue]);
 
+  // ゴーストカード：pending / failed
+  const [pendingRows, setPendingRows] = useState<Set<number>>(() => new Set(loadPending()));
+  useEffect(() => { savePending(Array.from(pendingRows)); }, [pendingRows]);
+  const [failedRows, setFailedRows] = useState<Set<number>>(new Set());
+  const addPending   = (row: number) => setPendingRows(prev => new Set(prev).add(row));
+  const removePending= (row: number) => setPendingRows(prev => { const n = new Set(prev); n.delete(row); return n; });
+  const markFailed   = (row: number) => setFailedRows(s => new Set(s).add(row));
+  const clearFailed  = (row: number) => setFailedRows(s => { const n = new Set(s); n.delete(row); return n; });
+
   const enqueueOp = (op: Omit<QueuedOp, 'id' | 'tryCount' | 'nextAt'>) => {
-    // 同一rowの同種opが未処理ならスキップ/マージも可。ここではそのまま追加。
     const q: QueuedOp = { ...op, id: uuid(), tryCount: 0, nextAt: nowMs() };
     setOpQueue(prev => [...prev, q]);
+    addPending(op.row);           // 即ゴースト化
+    clearFailed(op.row);          // 失敗表示の解除
     onIdle(() => flushOps());
+  };
+
+  // 一覧から該当rowを削除（成功時に呼ぶ）
+  const removeFromLists = (row: number) => {
+    if (listCacheRef.current.unans?.data) {
+      listCacheRef.current.unans = {
+        ts: Date.now(),
+        data: listCacheRef.current.unans.data.filter(x => x.row !== row)
+      };
+      setUnans(prev => (prev ? prev.filter(x => x.row !== row) : prev));
+    }
+    if (listCacheRef.current.drafts?.data) {
+      listCacheRef.current.drafts = {
+        ts: Date.now(),
+        data: listCacheRef.current.drafts.data.filter(x => x.row !== row)
+      };
+      setDrafts(prev => (prev ? prev.filter(x => x.row !== row) : prev));
+    }
+    detailCache.current.del(row);
   };
 
   const flushOps = async () => {
@@ -355,18 +435,23 @@ export default function App() {
             const ok = await noChangeFromWeb(op.row);
             if (!ok) throw new Error('noChangeFromWeb returned false');
           }
-          // 成功→キューから除去
+          // 成功：キューから除去、ゴースト解除、一覧からフェードアウト的に削除
           q = q.filter(x => x.id !== op.id);
+          removeFromLists(op.row);
+          removePending(op.row);
+          clearFailed(op.row);
           changed = true;
         } catch (e) {
-          // 失敗→リトライ予約
+          // 失敗：いったん失敗表示にしてバックオフ再試行
           op.tryCount += 1;
           op.nextAt = nowMs() + backoff(op.tryCount);
+          markFailed(op.row);
+          removePending(op.row);
           changed = true;
         }
       }
       if (changed) setOpQueue(q);
-      // 成功/失敗どちらでも一覧をアイドル時に軽く整合（SWR再フェッチ）
+      // 軽く整合（SWR再フェッチ）
       onIdle(() => {
         if (tab === 'unans') loadUnans();
         if (tab === 'drafts') loadDrafts();
@@ -390,26 +475,6 @@ export default function App() {
       if (typeof cancelIdleCallback === 'function') (window as any).cancelIdleCallback?.(idleId);
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // 楽観的に一覧/LRUを即時更新（見た目を先に変える）
-  const optimisticRemoveFromLists = (row: number) => {
-    if (listCacheRef.current.unans?.data) {
-      listCacheRef.current.unans = {
-        ts: Date.now(),
-        data: listCacheRef.current.unans.data.filter(x => x.row !== row)
-      };
-      setUnans(prev => (prev ? prev.filter(x => x.row !== row) : prev));
-    }
-    if (listCacheRef.current.drafts?.data) {
-      listCacheRef.current.drafts = {
-        ts: Date.now(),
-        data: listCacheRef.current.drafts.data.filter(x => x.row !== row)
-      };
-      setDrafts(prev => (prev ? prev.filter(x => x.row !== row) : prev));
-    }
-    // 履歴はGAS成功後に自然に増える想定。必要ならここで仮行を追加しても良い
-    detailCache.current.del(row);
-  };
 
   /* =========================
      詳細オープン＝LRU命中なら即描画→裏で最新化
@@ -747,27 +812,45 @@ export default function App() {
                 <div className="empty">未回答はありません</div>
               ) : (
                 <div className="cards">
-                  {unans.map((it) => (
-                    <div
-                      key={it.row}
-                      className="card"
-                      data-row={it.row}
-                      onClick={() => openDetail(it.row)}
-                      onMouseEnter={() => prefetchDetail(it.row)}
-                      onTouchStart={() => prefetchDetail(it.row)}
-                      role="button"
-                      tabIndex={0}
-                      aria-label="詳細を開く"
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          openDetail(it.row);
+                  {unans.map((it) => {
+                    const isPending = pendingRows.has(it.row);
+                    const isFailed  = failedRows.has(it.row);
+                    return (
+                      <CardShell
+                        key={it.row}
+                        isPending={isPending}
+                        isFailed={isFailed}
+                        onRetry={
+                          isFailed
+                            ? () => {
+                                clearFailed(it.row);
+                                addPending(it.row);
+                                // 同rowのキューを前倒し
+                                setOpQueue(prev => prev.map(op => op.row === it.row ? { ...op, nextAt: nowMs() } : op));
+                                onIdle(() => flushOps());
+                              }
+                            : undefined
                         }
-                      }}
-                    >
-                      <div className="q">{it.question}</div>
-                    </div>
-                  ))}
+                      >
+                        <div
+                          className="q"
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => !isPending && openDetail(it.row)}
+                          onKeyDown={(e) => {
+                            if ((e.key === 'Enter' || e.key === ' ') && !isPending) {
+                              e.preventDefault();
+                              openDetail(it.row);
+                            }
+                          }}
+                          onMouseEnter={() => prefetchDetail(it.row)}
+                          onTouchStart={() => prefetchDetail(it.row)}
+                        >
+                          {it.question}
+                        </div>
+                      </CardShell>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -786,27 +869,42 @@ export default function App() {
                   {drafts.map((it) => {
                     const clip = (it.draft || '').toString();
                     const clipText = clip.length > 80 ? clip.slice(0, 80) + '…' : clip;
+                    const isPending = pendingRows.has(it.row);
+                    const isFailed  = failedRows.has(it.row);
                     return (
-                      <div
+                      <CardShell
                         key={it.row}
-                        className="card"
-                        data-row={it.row}
-                        onClick={() => openDetail(it.row)}
-                        onMouseEnter={() => prefetchDetail(it.row)}
-                        onTouchStart={() => prefetchDetail(it.row)}
-                        role="button"
-                        tabIndex={0}
-                        aria-label="詳細を開く"
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            openDetail(it.row);
-                          }
-                        }}
+                        isPending={isPending}
+                        isFailed={isFailed}
+                        onRetry={
+                          isFailed
+                            ? () => {
+                                clearFailed(it.row);
+                                addPending(it.row);
+                                setOpQueue(prev => prev.map(op => op.row === it.row ? { ...op, nextAt: nowMs() } : op));
+                                onIdle(() => flushOps());
+                              }
+                            : undefined
+                        }
                       >
-                        <div className="q">{it.question}</div>
+                        <div
+                          className="q"
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => !isPending && openDetail(it.row)}
+                          onKeyDown={(e) => {
+                            if ((e.key === 'Enter' || e.key === ' ') && !isPending) {
+                              e.preventDefault();
+                              openDetail(it.row);
+                            }
+                          }}
+                          onMouseEnter={() => prefetchDetail(it.row)}
+                          onTouchStart={() => prefetchDetail(it.row)}
+                        >
+                          {it.question}
+                        </div>
                         <div className="meta">下書き：{clipText}</div>
-                      </div>
+                      </CardShell>
                     );
                   })}
                 </div>
@@ -938,18 +1036,16 @@ export default function App() {
                           alert('回答を入力してください');
                           return;
                         }
-                        // 1) 回答は即保存（失敗なら中断）
+                        // 1) 回答は先に保存（失敗なら中断）
                         const ok1 = await saveAnswer(detail.row, detail.answer || '', detail.url || '');
                         if (!ok1) {
                           alert('保存に失敗しました');
                           return;
                         }
-                        // 2) 楽観的UI（一覧から除去、詳細を閉じる）
-                        optimisticRemoveFromLists(detail.row);
-                        setTabDetail(false);
-                        // 3) 裏でGAS実行（キュー投入）
+                        // 2) 一覧にゴーストカード（pending）を立てる → 詳細を閉じる
                         enqueueOp({ type: 'COMPLETE', row: detail.row });
-                        // 4) 軽く再フェッチ（履歴へ移動する想定）
+                        setTabDetail(false);
+                        // 3) 軽く再フェッチ（SWR）
                         onIdle(() => {
                           if (tab === 'unans') loadUnans();
                           if (tab === 'drafts') loadDrafts();
@@ -964,12 +1060,10 @@ export default function App() {
                       onClick={async () => {
                         if (!detail) return;
                         if (!confirm('「変更しなくて良い」にして履歴に転送します。よろしいですか？')) return;
-                        // 1) 楽観的UI
-                        optimisticRemoveFromLists(detail.row);
-                        setTabDetail(false);
-                        // 2) 裏でGAS（キュー投入）
+                        // 1) ゴースト化（pending）→ 詳細を閉じる
                         enqueueOp({ type: 'NOCHANGE', row: detail.row });
-                        // 3) 再フェッチ
+                        setTabDetail(false);
+                        // 2) 再フェッチ
                         onIdle(() => {
                           if (tab === 'unans') loadUnans();
                           if (tab === 'drafts') loadDrafts();
