@@ -70,6 +70,33 @@ const onIdle = (fn: () => void) => {
   return 'requestIdleCallback' in window ? (window as any).requestIdleCallback(fn, { timeout: 1200 }) : setTimeout(fn, 300);
 };
 
+/* =========================
+   楽観的UI用：送信キュー
+   ========================= */
+type OpType = 'COMPLETE' | 'NOCHANGE';
+type QueuedOp = {
+  id: string;           // uuid
+  type: OpType;
+  row: number;
+  payload?: { answer?: string; url?: string }; // 将来拡張用
+  tryCount: number;
+  nextAt: number;       // 次試行の時刻(ms)
+};
+const QUEUE_KEY = 'planter/opQueue/v1';
+const nowMs = () => Date.now();
+const loadQueue = (): QueuedOp[] => {
+  try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]'); } catch { return []; }
+};
+const saveQueue = (q: QueuedOp[]) => {
+  try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch {}
+};
+const uuid = () => Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+const backoff = (n: number) => {
+  // 1, 2, 4, 8, 16, 32, 60, 120 ... 秒（上限 5分）
+  const secs = Math.min(300, n <= 5 ? 2 ** (n - 1) : 60 * (n - 4));
+  return secs * 1000;
+};
+
 const hueFor = (s: string) => {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
@@ -295,6 +322,94 @@ export default function App() {
   // 詳細（未回答/下書き）
   const [detail, setDetail] = useState<DetailT | null>(null);
   const [tabDetail, setTabDetail] = useState(false);
+
+  /* =========================
+     送信キュー（状態 + フラッシャ）
+     ========================= */
+  const [opQueue, setOpQueue] = useState<QueuedOp[]>(() => loadQueue());
+  const flushingRef = useRef(false);
+
+  useEffect(() => { saveQueue(opQueue); }, [opQueue]);
+
+  const enqueueOp = (op: Omit<QueuedOp, 'id' | 'tryCount' | 'nextAt'>) => {
+    // 同一rowの同種opが未処理ならスキップ/マージも可。ここではそのまま追加。
+    const q: QueuedOp = { ...op, id: uuid(), tryCount: 0, nextAt: nowMs() };
+    setOpQueue(prev => [...prev, q]);
+    onIdle(() => flushOps());
+  };
+
+  const flushOps = async () => {
+    if (flushingRef.current) return;
+    if (!navigator.onLine) return;
+    flushingRef.current = true;
+    try {
+      let changed = false;
+      let q = [...opQueue];
+      for (const op of q) {
+        if (nowMs() < op.nextAt) continue;
+        try {
+          if (op.type === 'COMPLETE') {
+            const ok = await completeFromWeb(op.row);
+            if (!ok) throw new Error('completeFromWeb returned false');
+          } else if (op.type === 'NOCHANGE') {
+            const ok = await noChangeFromWeb(op.row);
+            if (!ok) throw new Error('noChangeFromWeb returned false');
+          }
+          // 成功→キューから除去
+          q = q.filter(x => x.id !== op.id);
+          changed = true;
+        } catch (e) {
+          // 失敗→リトライ予約
+          op.tryCount += 1;
+          op.nextAt = nowMs() + backoff(op.tryCount);
+          changed = true;
+        }
+      }
+      if (changed) setOpQueue(q);
+      // 成功/失敗どちらでも一覧をアイドル時に軽く整合（SWR再フェッチ）
+      onIdle(() => {
+        if (tab === 'unans') loadUnans();
+        if (tab === 'drafts') loadDrafts();
+        if (tab === 'history') loadHistory();
+      });
+    } finally {
+      flushingRef.current = false;
+    }
+  };
+
+  // オンライン復帰・フォーカス時にフラッシュ
+  useEffect(() => {
+    const flushSoon = () => flushOps();
+    window.addEventListener('online', flushSoon);
+    window.addEventListener('focus', flushSoon);
+    const idleId = onIdle(flushSoon);
+    return () => {
+      window.removeEventListener('online', flushSoon);
+      window.removeEventListener('focus', flushSoon);
+      // @ts-ignore
+      if (typeof cancelIdleCallback === 'function') (window as any).cancelIdleCallback?.(idleId);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 楽観的に一覧/LRUを即時更新（見た目を先に変える）
+  const optimisticRemoveFromLists = (row: number) => {
+    if (listCacheRef.current.unans?.data) {
+      listCacheRef.current.unans = {
+        ts: Date.now(),
+        data: listCacheRef.current.unans.data.filter(x => x.row !== row)
+      };
+      setUnans(prev => (prev ? prev.filter(x => x.row !== row) : prev));
+    }
+    if (listCacheRef.current.drafts?.data) {
+      listCacheRef.current.drafts = {
+        ts: Date.now(),
+        data: listCacheRef.current.drafts.data.filter(x => x.row !== row)
+      };
+      setDrafts(prev => (prev ? prev.filter(x => x.row !== row) : prev));
+    }
+    // 履歴はGAS成功後に自然に増える想定。必要ならここで仮行を追加しても良い
+    detailCache.current.del(row);
+  };
 
   /* =========================
      詳細オープン＝LRU命中なら即描画→裏で最新化
@@ -823,25 +938,23 @@ export default function App() {
                           alert('回答を入力してください');
                           return;
                         }
+                        // 1) 回答は即保存（失敗なら中断）
                         const ok1 = await saveAnswer(detail.row, detail.answer || '', detail.url || '');
                         if (!ok1) {
                           alert('保存に失敗しました');
                           return;
                         }
-                        const ok2 = await completeFromWeb(detail.row);
-                        if (ok2) {
-                          alert('回答済みにしました（公開用へ転送）');
-                          // 未回答/下書き/履歴の整合性
-                          detailCache.current.del(detail.row);
-                          delete listCacheRef.current.unans;
-                          delete listCacheRef.current.drafts;
-                          delete listCacheRef.current.history;
-                          setTabDetail(false);
+                        // 2) 楽観的UI（一覧から除去、詳細を閉じる）
+                        optimisticRemoveFromLists(detail.row);
+                        setTabDetail(false);
+                        // 3) 裏でGAS実行（キュー投入）
+                        enqueueOp({ type: 'COMPLETE', row: detail.row });
+                        // 4) 軽く再フェッチ（履歴へ移動する想定）
+                        onIdle(() => {
                           if (tab === 'unans') loadUnans();
                           if (tab === 'drafts') loadDrafts();
-                        } else {
-                          alert('転送に失敗しました');
-                        }
+                          loadHistory();
+                        });
                       }}
                     >
                       回答済みにする（公開用へ転送）
@@ -851,19 +964,17 @@ export default function App() {
                       onClick={async () => {
                         if (!detail) return;
                         if (!confirm('「変更しなくて良い」にして履歴に転送します。よろしいですか？')) return;
-                        const ok = await noChangeFromWeb(detail.row);
-                        if (ok) {
-                          alert('変更なしとして履歴に転送しました');
-                          detailCache.current.del(detail.row);
-                          delete listCacheRef.current.unans;
-                          delete listCacheRef.current.history;
-                          delete listCacheRef.current.drafts;
-                          setTabDetail(false);
+                        // 1) 楽観的UI
+                        optimisticRemoveFromLists(detail.row);
+                        setTabDetail(false);
+                        // 2) 裏でGAS（キュー投入）
+                        enqueueOp({ type: 'NOCHANGE', row: detail.row });
+                        // 3) 再フェッチ
+                        onIdle(() => {
                           if (tab === 'unans') loadUnans();
                           if (tab === 'drafts') loadDrafts();
-                        } else {
-                          alert('処理に失敗しました');
-                        }
+                          loadHistory();
+                        });
                       }}
                     >
                       変更しなくて良い
