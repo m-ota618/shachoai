@@ -5,8 +5,6 @@ import {
   getDrafts,
   getDetail,
   saveAnswer,
-  completeFromWeb,
-  noChangeFromWeb,
   getHistoryList,
   getHistoryDetail,
   getAllTopicOptionsPinnedFirst,
@@ -26,47 +24,18 @@ import type {
   PredictResult
 } from './types';
 import { showApiError } from './utils/error';
+import OutboxBanner from './components/OutboxBanner';
+
+/* === TanStack Query === */
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+
+/* === Outbox（IndexedDB） === */
+import { push as pushOutbox } from './lib/outbox';
 
 type Tab = 'unans' | 'drafts' | 'history' | 'update' | 'sync';
 
 /* =========================
-   キャッシュ基盤（App.tsx内に完結）
-   ========================= */
-type Entry<V> = { value: V; ts: number };
-function createLRUCache<K, V>(opt: { maxEntries: number; ttlMs?: number; maxItemBytes?: number }) {
-  const { maxEntries, ttlMs = 10 * 60 * 1000, maxItemBytes = 50_000 } = opt;
-  const map = new Map<K, Entry<V>>();
-  const now = () => Date.now();
-  const sizeOf = (v: V) => { try { return JSON.stringify(v).length; } catch { return 0; } };
-
-  const get = (k: K): V | undefined => {
-    const e = map.get(k);
-    if (!e) return;
-    if (ttlMs && now() - e.ts > ttlMs) { map.delete(k); return; }
-    // LRU（参照されたら末尾へ）
-    map.delete(k); map.set(k, e);
-    return e.value;
-  };
-  const set = (k: K, v: V) => {
-    if (maxItemBytes && sizeOf(v) > maxItemBytes) return; // 大きすぎは入れない
-    if (map.has(k)) map.delete(k);
-    map.set(k, { value: v, ts: now() });
-    if (map.size > maxEntries) {
-      const it = map.keys().next();
-      if (!it.done) {
-        map.delete(it.value as K); // done ガード後に削除
-      }
-    }
-  };
-  const del = (k: K) => { map.delete(k); };
-  const has = (k: K) => !!get(k);
-  const clear = () => { map.clear(); };
-  return { get, set, del, has, clear };
-}
-const LIST_TTL = 5 * 60 * 1000; // 一覧SWRのTTL 5分
-
-/* =========================
-   安全な onIdle ヘルパー（型競合しない）
+   安全な onIdle ヘルパー
    ========================= */
 type IdleHandle = { cancel: () => void };
 const onIdle = (fn: () => void): IdleHandle => {
@@ -91,71 +60,6 @@ const onIdle = (fn: () => void): IdleHandle => {
   }
 };
 
-/* =========================
-   楽観的UI用：送信キュー
-   ========================= */
-type OpType = 'COMPLETE' | 'NOCHANGE';
-type QueuedOp = {
-  id: string;           // uuid
-  type: OpType;
-  row: number;
-  payload?: { answer?: string; url?: string }; // 将来拡張用
-  tryCount: number;
-  nextAt: number;       // 次試行の時刻(ms)
-};
-const QUEUE_KEY = 'planter/opQueue/v1';
-const nowMs = () => Date.now();
-const loadQueue = (): QueuedOp[] => {
-  try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]'); } catch { return []; }
-};
-const saveQueue = (q: QueuedOp[]) => {
-  try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); } catch {}
-};
-const uuid = () => Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-const backoff = (n: number) => {
-  // 1, 2, 4, 8, 16, 32, 60, 120 ... 秒（上限 5分）
-  const secs = Math.min(300, n <= 5 ? 2 ** (n - 1) : 60 * (n - 4));
-  return secs * 1000;
-};
-
-/* =========================
-   ゴーストカード用：送信中／失敗管理
-   ========================= */
-const PENDING_KEY = 'planter/pendingRows/v1';
-const loadPending = (): number[] => {
-  try { return JSON.parse(localStorage.getItem(PENDING_KEY) || '[]'); } catch { return []; }
-};
-const savePending = (rows: number[]) => {
-  try { localStorage.setItem(PENDING_KEY, JSON.stringify(rows)); } catch {}
-};
-
-/* =========================
-   「成功時に確実に消える」：TTL付き“隠しリスト”
-   ========================= */
-const HIDE_KEY = 'planter/hiddenRows/v1';
-const HIDE_TTL_MS = 3 * 60 * 1000; // 揺り戻し抑制のため 3分隠す（必要に応じて調整可）
-type HiddenMap = Record<string, number>; // row -> expiresAt(ms)
-const loadHidden = (): HiddenMap => {
-  try { return JSON.parse(localStorage.getItem(HIDE_KEY) || '{}'); } catch { return {}; }
-};
-const saveHidden = (m: HiddenMap) => {
-  try { localStorage.setItem(HIDE_KEY, JSON.stringify(m)); } catch {}
-};
-const pruneHiddenObj = (obj: HiddenMap): HiddenMap => {
-  const now = nowMs();
-  let changed = false;
-  const next: HiddenMap = {};
-  for (const k of Object.keys(obj)) {
-    const exp = obj[k];
-    if (typeof exp === 'number' && exp > now) {
-      next[k] = exp;
-    } else {
-      changed = true;
-    }
-  }
-  return changed ? next : obj;
-};
-
 const hueFor = (s: string) => {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
@@ -174,7 +78,7 @@ const badgeStyle = (topic: string) => {
 function UrlListEditor(props: {
   value?: string;
   onChange: (joined: string) => void;
-  collapsedByDefault?: boolean; // true だと、初期値が空のときは「追加する」ボタンだけ
+  collapsedByDefault?: boolean;
   label?: string;
   help?: string;
 }) {
@@ -183,14 +87,13 @@ function UrlListEditor(props: {
     (v || '')
       .split('\n')
       .map(s => s.trim())
-      .filter((s, i, a) => s.length > 0 || a.length === 0); // 空配列は避ける
+      .filter((s, _i, a) => s.length > 0 || a.length === 0); // 空配列は避ける
 
   const [urls, setUrls] = React.useState<string[]>(toArray(value));
   const [expanded, setExpanded] = React.useState<boolean>(
     (value && value.trim().length > 0) || !collapsedByDefault ? true : false
   );
 
-  // 親からの値変更が入った場合に同期（通常はほぼ発火しない）
   React.useEffect(() => {
     setUrls(toArray(value));
     if ((value && value.trim()) || !collapsedByDefault) setExpanded(true);
@@ -265,7 +168,7 @@ function UrlListEditor(props: {
             className="btn btn-secondary"
             onClick={() => {
               commit([]);
-              setExpanded(false); // 空のときは閉じる
+              setExpanded(false);
             }}
             aria-label="参照URL入力を閉じる"
           >
@@ -278,52 +181,15 @@ function UrlListEditor(props: {
 }
 
 /* =========================
-   ゴーストカードUIコンポーネント
+   カードコンテナ（Ghost表示は廃止）
    ========================= */
-const Spinner: React.FC = () => <span className="spinner" aria-hidden />;
-
-const CardShell: React.FC<{
-  isPending?: boolean;
-  isFailed?: boolean;
-  onRetry?: () => void;
-  children?: React.ReactNode;
-}> = ({ isPending, isFailed, onRetry, children }) => {
-  if (isPending) {
-    // ▶︎ 控えめ表示に調整
-    return (
-      <div className="card pending" aria-live="polite" role="status">
-        <div className="row" style={{ alignItems: 'center', gap: 8 }}>
-          <Spinner />
-          <span className="meta" style={{ fontSize: '0.92em', opacity: 0.85 }}>
-            送信中…
-          </span>
-        </div>
-        <div className="meta" style={{ fontSize: '0.86em', opacity: 0.75 }}>
-          通信状況により数分かかることがあります
-        </div>
-      </div>
-    );
-  }
-  if (isFailed) {
-    return (
-      <div className="card error" role="alert">
-        <div className="row" style={{ alignItems: 'center', gap: 8 }}>
-          <span className="badge badge-danger">失敗</span>
-          <div className="q">転送に失敗しました</div>
-          {onRetry && (
-            <button className="btn btn-secondary" onClick={onRetry} style={{ marginLeft: 'auto' }}>
-              再試行
-            </button>
-          )}
-        </div>
-        <div className="help">ネットワーク状況を確認して再実行してください</div>
-      </div>
-    );
-  }
+const CardShell: React.FC<{ children?: React.ReactNode; }> = ({ children }) => {
   return <div className="card">{children}</div>;
 };
 
 export default function App() {
+  const queryClient = useQueryClient();
+
   const [tab, setTab] = useState<Tab>('unans');
 
   // ==== Sidebar (hamburger) ====
@@ -334,235 +200,45 @@ export default function App() {
   };
 
   /* =========================
-     一覧SWRキャッシュ & 競合排除
+     未回答 / 下書き / 履歴 一覧（React Query）
      ========================= */
-  const listCacheRef = useRef<{
-    unans?: { ts: number; data: UnansweredItem[] };
-    drafts?: { ts: number; data: DraftItem[] };
-    history?: { ts: number; data: HistoryItem[] };
-  }>({});
-  const getCached = <T,>(b?: { ts: number; data: T }) => (b && Date.now() - b.ts < LIST_TTL ? b.data : null);
-  const seqRef = useRef({ unans: 0, drafts: 0, history: 0 });
+  const {
+    data: unans = [],
+    isLoading: unansLoading,
+  } = useQuery<UnansweredItem[]>({
+    queryKey: ['unans'],
+    queryFn: getUnanswered,
+    enabled: tab === 'unans', // アクティブな時だけ
+    staleTime: 60_000,
+  });
+
+  const {
+    data: drafts = [],
+    isLoading: draftsLoading,
+  } = useQuery<DraftItem[]>({
+    queryKey: ['drafts'],
+    queryFn: getDrafts,
+    enabled: tab === 'drafts',
+    staleTime: 60_000,
+  });
+
+  const {
+    data: history = [],
+    isLoading: historyLoading,
+  } = useQuery<HistoryItem[]>({
+    queryKey: ['history'],
+    queryFn: getHistoryList,
+    enabled: tab === 'history',
+    staleTime: 60_000,
+  });
 
   /* =========================
-     詳細LRU＋先読み
+     詳細（未回答/下書き）
      ========================= */
-  const detailCache = useRef(createLRUCache<number, DetailT>({
-    maxEntries: 200,
-    ttlMs: 10 * 60 * 1000,
-    maxItemBytes: 50_000
-  }));
-  const inflightDetailRef = useRef<Map<number, Promise<void>>>(new Map());
-  const prefetchDetail = (row: number) => {
-    if (detailCache.current.has(row)) return;
-    if (inflightDetailRef.current.has(row)) return;
-    const p = (async () => {
-      try {
-        const d = await getDetail(row);
-        detailCache.current.set(row, d);
-      } finally {
-        inflightDetailRef.current.delete(row);
-      }
-    })();
-    inflightDetailRef.current.set(row, p);
-  };
-  const prefetchTopDetails = (rows: number[], n = 6) => {
-    rows.slice(0, n).forEach(prefetchDetail);
-  };
-
-  // 未回答
-  const [unans, setUnans] = useState<UnansweredItem[] | null>(null);
-  const loadUnans = async () => {
-    const my = ++seqRef.current.unans;
-    const cached = getCached(listCacheRef.current.unans);
-    if (cached) setUnans(cached); else setUnans(null);
-    try {
-      const r = await getUnanswered();
-      if (my !== seqRef.current.unans) return; // 古いレスポンスは無視
-      listCacheRef.current.unans = { ts: Date.now(), data: r };
-      setUnans(r);
-      prefetchTopDetails(r.map(x => x.row), 6);
-    } catch (err: unknown) {
-      if (!cached) setUnans([]);
-      showApiError(err, '未回答取得エラー');
-    }
-  };
-
-  // 下書き
-  const [drafts, setDrafts] = useState<DraftItem[] | null>(null);
-  const loadDrafts = async () => {
-    const my = ++seqRef.current.drafts;
-    const cached = getCached(listCacheRef.current.drafts);
-    if (cached) setDrafts(cached); else setDrafts(null);
-    try {
-      const r = await getDrafts();
-      if (my !== seqRef.current.drafts) return;
-      listCacheRef.current.drafts = { ts: Date.now(), data: r };
-      setDrafts(r);
-      prefetchTopDetails(r.map(x => x.row), 6);
-    } catch (err: unknown) {
-      if (!cached) setDrafts([]);
-      showApiError(err, '下書き取得エラー');
-    }
-  };
-
-  // 履歴
-  const [history, setHistory] = useState<HistoryItem[] | null>(null);
-  const loadHistory = async () => {
-    const my = ++seqRef.current.history;
-    const cached = getCached(listCacheRef.current.history);
-    if (cached) setHistory(cached); else setHistory(null);
-    try {
-      const r = await getHistoryList();
-      if (my !== seqRef.current.history) return;
-      listCacheRef.current.history = { ts: Date.now(), data: r };
-      setHistory(r);
-      // 履歴は詳細APIが別のため詳細先読みは行わない
-    } catch (err: unknown) {
-      if (!cached) setHistory([]);
-      showApiError(err, '履歴取得エラー');
-    }
-  };
-
-  // 詳細（未回答/下書き）
   const [detail, setDetail] = useState<DetailT | null>(null);
   const [tabDetail, setTabDetail] = useState(false);
 
-  /* =========================
-     送信キュー（状態 + フラッシャ）
-     ========================= */
-  const [opQueue, setOpQueue] = useState<QueuedOp[]>(() => loadQueue());
-  const flushingRef = useRef(false);
-  useEffect(() => { saveQueue(opQueue); }, [opQueue]);
-
-  // ゴーストカード：pending / failed
-  const [pendingRows, setPendingRows] = useState<Set<number>>(() => new Set(loadPending()));
-  useEffect(() => { savePending(Array.from(pendingRows)); }, [pendingRows]);
-  const [failedRows, setFailedRows] = useState<Set<number>>(new Set());
-  const addPending   = (row: number) => setPendingRows(prev => new Set(prev).add(row));
-  const removePending= (row: number) => setPendingRows(prev => { const n = new Set(prev); n.delete(row); return n; });
-  const markFailed   = (row: number) => setFailedRows(s => new Set(s).add(row));
-  const clearFailed  = (row: number) => setFailedRows(s => { const n = new Set(s); n.delete(row); return n; });
-
-  /* =========================
-     TTL付き“隠しリスト”の状態
-     ========================= */
-  const [hiddenRows, setHiddenRows] = useState<HiddenMap>(() => pruneHiddenObj(loadHidden()));
-  useEffect(() => { saveHidden(hiddenRows); }, [hiddenRows]);
-  // 定期的に期限切れを掃除（軽量）
-  useEffect(() => {
-    const t = window.setInterval(() => {
-      setHiddenRows(prev => pruneHiddenObj(prev));
-    }, 30_000);
-    return () => window.clearInterval(t);
-  }, []);
-  const isHidden = (row: number) => {
-    const exp = hiddenRows[String(row)];
-    if (!exp) return false;
-    if (exp <= nowMs()) {
-      // 期限切れなら即掃除
-      setHiddenRows(prev => {
-        const { [String(row)]: _, ...rest } = prev;
-        return rest;
-      });
-      return false;
-    }
-    return true;
-  };
-  const markHidden = (row: number, ttlMs = HIDE_TTL_MS) => {
-    setHiddenRows(prev => ({ ...prev, [String(row)]: nowMs() + ttlMs }));
-  };
-
-  const enqueueOp = (op: Omit<QueuedOp, 'id' | 'tryCount' | 'nextAt'>) => {
-    const q: QueuedOp = { ...op, id: uuid(), tryCount: 0, nextAt: nowMs() };
-    setOpQueue(prev => [...prev, q]);
-    addPending(op.row);           // 即ゴースト化
-    clearFailed(op.row);          // 失敗表示の解除
-    markHidden(op.row);           // ← 成功前でもUIの“揺り戻し”を防ぐため一時的に隠す
-    onIdle(() => flushOps());
-  };
-
-  // 一覧から該当rowを削除（成功時に呼ぶ）
-  const removeFromLists = (row: number) => {
-    if (listCacheRef.current.unans?.data) {
-      listCacheRef.current.unans = {
-        ts: Date.now(),
-        data: listCacheRef.current.unans.data.filter(x => x.row !== row)
-      };
-      setUnans(prev => (prev ? prev.filter(x => x.row !== row) : prev));
-    }
-    if (listCacheRef.current.drafts?.data) {
-      listCacheRef.current.drafts = {
-        ts: Date.now(),
-        data: listCacheRef.current.drafts.data.filter(x => x.row !== row)
-      };
-      setDrafts(prev => (prev ? prev.filter(x => x.row !== row) : prev));
-    }
-    // 履歴はGAS成功後に自然に増える想定
-    detailCache.current.del(row);
-  };
-
-  const flushOps = async () => {
-    if (flushingRef.current) return;
-    if (!navigator.onLine) return;
-    flushingRef.current = true;
-    try {
-      let changed = false;
-      let q = [...opQueue];
-      for (const op of q) {
-        if (nowMs() < op.nextAt) continue;
-        try {
-          if (op.type === 'COMPLETE') {
-            const ok = await completeFromWeb(op.row);
-            if (!ok) throw new Error('completeFromWeb returned false');
-          } else if (op.type === 'NOCHANGE') {
-            const ok = await noChangeFromWeb(op.row);
-            if (!ok) throw new Error('noChangeFromWeb returned false');
-          }
-          // 成功：キューから除去、ゴースト解除、一覧から削除（UIは既にTTLで隠れている）
-          q = q.filter(x => x.id !== op.id);
-          removeFromLists(op.row);
-          removePending(op.row);
-          clearFailed(op.row);
-          // 成功後は隠しTTLを短縮/除去してもよいが、サーバ反映遅延を考慮して維持
-          changed = true;
-        } catch (e) {
-          // 失敗：いったん失敗表示にしてバックオフ再試行
-          op.tryCount += 1;
-          op.nextAt = nowMs() + backoff(op.tryCount);
-          markFailed(op.row);
-          removePending(op.row);
-          changed = true;
-        }
-      }
-      if (changed) setOpQueue(q);
-      // 軽く整合（SWR再フェッチ）
-      onIdle(() => {
-        if (tab === 'unans') loadUnans();
-        if (tab === 'drafts') loadDrafts();
-        if (tab === 'history') loadHistory();
-      });
-    } finally {
-      flushingRef.current = false;
-    }
-  };
-
-  // オンライン復帰・フォーカス時にフラッシュ
-  useEffect(() => {
-    const flushSoon = () => flushOps();
-    window.addEventListener('online', flushSoon);
-    window.addEventListener('focus', flushSoon);
-    const idleHandle = onIdle(flushSoon);
-    return () => {
-      window.removeEventListener('online', flushSoon);
-      window.removeEventListener('focus', flushSoon);
-      idleHandle.cancel();
-    };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  /* =========================
-     詳細オープン＝LRU命中なら即描画→裏で最新化
-     ========================= */
+  // クリック時：キャッシュがあれば即表示→裏で先読み
   const openDetail = (() => {
     let clicking = false;
     return async (row: number) => {
@@ -573,33 +249,29 @@ export default function App() {
       setShowPred(false);
       setPred(null);
 
-      const cached = detailCache.current.get(row);
-      setDetail(cached || null); // 命中で即描画、外れはローディング
+      const cached = queryClient.getQueryData<DetailT>(['detail', row]);
+      setDetail(cached ?? null);
 
-      if (!inflightDetailRef.current.has(row)) {
-        const p = (async () => {
-          try {
-            const fresh = await getDetail(row);
-            detailCache.current.set(row, fresh);
-            setDetail(prev => (prev?.row === row || prev === null) ? fresh : prev);
-          } catch (err) {
-            if (!cached) setDetail(null);
-            showApiError(err, '詳細取得エラー');
-          } finally {
-            inflightDetailRef.current.delete(row);
-          }
-        })();
-        inflightDetailRef.current.set(row, p);
+      try {
+        await queryClient.prefetchQuery({
+          queryKey: ['detail', row],
+          queryFn: () => getDetail(row),
+          staleTime: 5 * 60_000,
+        });
+        const fresh = queryClient.getQueryData<DetailT>(['detail', row]);
+        setDetail(prev => (prev?.row === row || prev === null) ? (fresh ?? null) : prev);
+      } catch (err) {
+        if (!cached) setDetail(null);
+        showApiError(err, '詳細取得エラー');
       }
+
       clicking = false;
     };
   })();
 
-  // 履歴詳細
+  // 履歴詳細（後で Query 化してOK）
   const [historyDetail, setHistoryDetail] = useState<HistoryDetailT | null>(null);
   const [tabHistoryDetail, setTabHistoryDetail] = useState(false);
-
-  // 履歴も“先に開いて後で読み込み”
   const openHistoryDetail = (() => {
     let inflight = false;
     return async (row: number) => {
@@ -617,30 +289,29 @@ export default function App() {
     };
   })();
 
-  // Update（検索・編集）
+  /* =========================
+     Update（検索・編集）
+     ========================= */
   const [topicOptions, setTopicOptions] = useState<string[]>([]);
   const [updQuery, setUpdQuery] = useState('');
   const [updTopic, setUpdTopic] = useState('');
   const [updList, setUpdList] = useState<UpdateItem[] | null>(null);
   const [updCur, setUpdCur] = useState<UpdateItem | null>(null);
 
-  // ★追加：一覧↔詳細の切替ヘルパー
   const openUpdateDetail = (it: UpdateItem) => {
     setUpdCur(it);
     try { window.scrollTo({ top: 0, behavior: 'auto' }); } catch {}
   };
-
   const closeUpdateDetail = async (reload?: boolean) => {
     setUpdCur(null);
-    if (reload) await loadUpdateList(); // 保存後は再読み込み
+    if (reload) await loadUpdateList();
   };
-
   const initUpdateTab = async () => {
     setUpdList(null);
     if (!topicOptions.length) {
       try {
-        const t = await getAllTopicOptionsPinnedFirst();
-        setTopicOptions(t);
+        const t = await getAllTopicOptionsPinnedFirst(); // Promise<string[]>
+        setTopicOptions(Array.isArray(t) ? t : []);
       } catch (err: unknown) {
         console.warn(err);
       }
@@ -746,13 +417,10 @@ export default function App() {
     return () => window.removeEventListener('scroll', onScroll);
   }, [tab]);
 
-  // タブ切替時ロード
+  // タブ切替：Update/Sync 初期化（一覧は React Query に任せる）
   useEffect(() => {
     setTabDetail(false);
     setTabHistoryDetail(false);
-    if (tab === 'unans') loadUnans();
-    if (tab === 'drafts') loadDrafts();
-    if (tab === 'history') loadHistory();
     if (tab === 'update') initUpdateTab();
     if (tab === 'sync') {
       setSyncMsg('');
@@ -761,23 +429,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
-  // 一覧のアイドル時プリロード
-  useEffect(() => {
-    if (tab === 'unans' && unans) {
-      onIdle(() => { loadDrafts(); });
-      onIdle(() => { loadHistory(); });
-    }
-    if (tab === 'drafts' && drafts) {
-      onIdle(() => { loadUnans(); });
-      onIdle(() => { loadHistory(); });
-    }
-  }, [tab, unans, drafts]);
-
   // === Icons (inline SVG) ===
   const I = {
     burger: (
       <svg viewBox="0 0 24 24" fill="none" aria-hidden>
-        {/* 端を短く・丸める・均等間隔 */}
         <path d="M5 7H19M5 12H19M5 17H19"
               stroke="currentColor" strokeWidth="1.8"
               strokeLinecap="round" strokeLinejoin="round" />
@@ -795,7 +450,7 @@ export default function App() {
     ),
     history: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-        <path d="M3 12a9 9 1 1 0 3-6.7M3 3v6h6M12 7v6l4 2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+        <path d="M3 12a9 9 0 1 0 3-6.7M3 3v6h6M12 7v6l4 2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
       </svg>
     ),
     update: (
@@ -810,7 +465,6 @@ export default function App() {
     ),
     close: (
       <svg viewBox="0 0 24 24" fill="none" aria-hidden>
-        {/* 交点が中心に来るよう調整＆丸める */}
         <path d="M7 7L17 17M17 7L7 17"
               stroke="currentColor" strokeWidth="2"
               strokeLinecap="round" strokeLinejoin="round" />
@@ -837,7 +491,6 @@ export default function App() {
           <img src="/planter-lockup.svg" alt="Planter" className="brand-lockup-sm" />
         </div>
       </div>
-
 
       <div className="layout">
         {/* Sidebar */}
@@ -877,6 +530,9 @@ export default function App() {
 
         {/* Main content */}
         <main className="content">
+          {/* ★ 送信バナー（Outbox件数>0の時だけ表示される） */}
+          <OutboxBanner />
+
           {/* To Top Button */}
           <button
             className={`toTopBtn ${showTop ? '' : 'hidden'}`}
@@ -890,56 +546,39 @@ export default function App() {
           {tab === 'unans' && !tabDetail && (
             <div className="wrap">
               <h2 className="page-title">未回答</h2>
-              {unans === null ? (
+              {unansLoading ? (
                 <div className="skeleton">読み込み中...</div>
-              ) : (() => {
-                const visible = unans.filter(it => !isHidden(it.row));
-                return visible.length === 0 ? (
-                  <div className="empty">未回答はありません</div>
-                ) : (
-                  <div className="cards">
-                    {visible.map((it) => {
-                      const isPending = pendingRows.has(it.row);
-                      const isFailed  = failedRows.has(it.row);
-                      return (
-                        <CardShell
-                          key={it.row}
-                          isPending={isPending}
-                          isFailed={isFailed}
-                          onRetry={
-                            isFailed
-                              ? () => {
-                                  clearFailed(it.row);
-                                  addPending(it.row);
-                                  // 同rowのキューを前倒し
-                                  setOpQueue(prev => prev.map(op => op.row === it.row ? { ...op, nextAt: nowMs() } : op));
-                                  onIdle(() => flushOps());
-                                }
-                              : undefined
+              ) : unans.length === 0 ? (
+                <div className="empty">未回答はありません</div>
+              ) : (
+                <div className="cards">
+                  {unans.map((it) => (
+                    <CardShell key={it.row}>
+                      <div
+                        className="q"
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openDetail(it.row)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            openDetail(it.row);
                           }
-                        >
-                          <div
-                            className="q"
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => !isPending && openDetail(it.row)}
-                            onKeyDown={(e) => {
-                              if ((e.key === 'Enter' || e.key === ' ') && !isPending) {
-                                e.preventDefault();
-                                openDetail(it.row);
-                              }
-                            }}
-                            onMouseEnter={() => prefetchDetail(it.row)}
-                            onTouchStart={() => prefetchDetail(it.row)}
-                          >
-                            {it.question}
-                          </div>
-                        </CardShell>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
+                        }}
+                        onMouseEnter={() => {
+                          // カードホバーで detail を先読み
+                          queryClient.prefetchQuery({ queryKey: ['detail', it.row], queryFn: () => getDetail(it.row), staleTime: 5 * 60_000 });
+                        }}
+                        onTouchStart={() => {
+                          queryClient.prefetchQuery({ queryKey: ['detail', it.row], queryFn: () => getDetail(it.row), staleTime: 5 * 60_000 });
+                        }}
+                      >
+                        {it.question}
+                      </div>
+                    </CardShell>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -947,58 +586,43 @@ export default function App() {
           {tab === 'drafts' && !tabDetail && (
             <div className="wrap">
               <h2 className="page-title">下書き</h2>
-              {drafts === null ? (
+              {draftsLoading ? (
                 <div className="skeleton">読み込み中...</div>
-              ) : (() => {
-                const visible = drafts.filter(it => !isHidden(it.row));
-                return visible.length === 0 ? (
-                  <div className="empty">下書きはありません</div>
-                ) : (
-                  <div className="cards">
-                    {visible.map((it) => {
-                      const clip = (it.draft || '').toString();
-                      const clipText = clip.length > 80 ? clip.slice(0, 80) + '…' : clip;
-                      const isPending = pendingRows.has(it.row);
-                      const isFailed  = failedRows.has(it.row);
-                      return (
-                        <CardShell
-                          key={it.row}
-                          isPending={isPending}
-                          isFailed={isFailed}
-                          onRetry={
-                            isFailed
-                              ? () => {
-                                  clearFailed(it.row);
-                                  addPending(it.row);
-                                  setOpQueue(prev => prev.map(op => op.row === it.row ? { ...op, nextAt: nowMs() } : op));
-                                  onIdle(() => flushOps());
-                                }
-                              : undefined
-                          }
+              ) : drafts.length === 0 ? (
+                <div className="empty">下書きはありません</div>
+              ) : (
+                <div className="cards">
+                  {drafts.map((it) => {
+                    const clip = (it.draft || '').toString();
+                    const clipText = clip.length > 80 ? clip.slice(0, 80) + '…' : clip;
+                    return (
+                      <CardShell key={it.row}>
+                        <div
+                          className="q"
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => openDetail(it.row)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              openDetail(it.row);
+                            }
+                          }}
+                          onMouseEnter={() => {
+                            queryClient.prefetchQuery({ queryKey: ['detail', it.row], queryFn: () => getDetail(it.row), staleTime: 5 * 60_000 });
+                          }}
+                          onTouchStart={() => {
+                            queryClient.prefetchQuery({ queryKey: ['detail', it.row], queryFn: () => getDetail(it.row), staleTime: 5 * 60_000 });
+                          }}
                         >
-                          <div
-                            className="q"
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => !isPending && openDetail(it.row)}
-                            onKeyDown={(e) => {
-                              if ((e.key === 'Enter' || e.key === ' ') && !isPending) {
-                                e.preventDefault();
-                                openDetail(it.row);
-                              }
-                            }}
-                            onMouseEnter={() => prefetchDetail(it.row)}
-                            onTouchStart={() => prefetchDetail(it.row)}
-                          >
-                            {it.question}
-                          </div>
-                          <div className="meta">下書き：{clipText}</div>
-                        </CardShell>
-                      );
-                    })}
-                  </div>
-                );
-              })()}
+                          {it.question}
+                        </div>
+                        <div className="meta">下書き：{clipText}</div>
+                      </CardShell>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
 
@@ -1006,7 +630,7 @@ export default function App() {
           {tab === 'history' && !tabHistoryDetail && (
             <div className="wrap">
               <h2 className="page-title">履歴</h2>
-              {history === null ? (
+              {historyLoading ? (
                 <div className="skeleton">読み込み中...</div>
               ) : history.length === 0 ? (
                 <div className="empty">履歴はありません</div>
@@ -1110,9 +734,10 @@ export default function App() {
                         const ok = await saveAnswer(detail.row, detail.answer || '', detail.url || '');
                         if (ok) {
                           alert('下書き保存しました');
-                          // 詳細キャッシュ更新・一覧キャッシュは念のためinvalidate
-                          detailCache.current.set(detail.row, { ...detail });
-                          delete listCacheRef.current.drafts;
+                          // detail キャッシュ更新
+                          queryClient.setQueryData<DetailT>(['detail', detail.row], { ...detail });
+                          // drafts を軽く更新
+                          queryClient.invalidateQueries({ queryKey: ['drafts'] });
                         }
                       }}
                     >
@@ -1122,25 +747,25 @@ export default function App() {
                       className="btn btn-primary"
                       onClick={async () => {
                         if (!detail) return;
-                        if (!detail.answer) {
+                        if (!detail.answer?.trim()) {
                           alert('回答を入力してください');
                           return;
                         }
-                        // 1) 回答は先に保存（失敗なら中断）
+                        // 1) 先に下書き保存（失敗なら中断）
                         const ok1 = await saveAnswer(detail.row, detail.answer || '', detail.url || '');
                         if (!ok1) {
                           alert('保存に失敗しました');
                           return;
                         }
-                        // 2) 一覧にゴーストカード（pending）を立てる → 詳細を閉じる
-                        enqueueOp({ type: 'COMPLETE', row: detail.row });
-                        setTabDetail(false);
-                        // 3) 軽く再フェッチ（SWR）
-                        onIdle(() => {
-                          if (tab === 'unans') loadUnans();
-                          if (tab === 'drafts') loadDrafts();
-                          loadHistory();
+                        // 2) Outbox に積む（送信はバナーで明示）
+                        await pushOutbox({
+                          type: 'COMPLETE',
+                          row: detail.row,
+                          payload: { answer: detail.answer, url: detail.url || '' },
                         });
+                        alert('未送信キューに追加しました（上部バナーから送信）');
+                        // 3) 詳細を閉じる（この時点ではサーバ状態は未変更）
+                        setTabDetail(false);
                       }}
                     >
                       回答済みにする（公開用へ転送）
@@ -1149,16 +774,10 @@ export default function App() {
                       className="btn btn-secondary"
                       onClick={async () => {
                         if (!detail) return;
-                        if (!confirm('「変更しなくて良い」にして履歴に転送します。よろしいですか？')) return;
-                        // 1) ゴースト化（pending）→ 詳細を閉じる
-                        enqueueOp({ type: 'NOCHANGE', row: detail.row });
+                        if (!confirm('「変更しなくて良い」にして履歴に送信キューへ追加します。よろしいですか？')) return;
+                        await pushOutbox({ type: 'NOCHANGE', row: detail.row });
+                        alert('未送信キューに追加しました（上部バナーから送信）');
                         setTabDetail(false);
-                        // 2) 再フェッチ
-                        onIdle(() => {
-                          if (tab === 'unans') loadUnans();
-                          if (tab === 'drafts') loadDrafts();
-                          loadHistory();
-                        });
                       }}
                     >
                       変更しなくて良い
@@ -1216,7 +835,7 @@ export default function App() {
                 <>
                   <h2 className="page-title">データ編集</h2>
 
-                {/* 検索フォーム */}
+                  {/* 検索フォーム */}
                   <div className="row">
                     <div style={{ flex: '1 1 280px' }}>
                       <input
@@ -1323,10 +942,10 @@ export default function App() {
                               alert('保存しました。');
                               await closeUpdateDetail(true); // 一覧へ戻り再読込
                               // 影響しそうなキャッシュを無効化
-                              detailCache.current.del(updCur.row);
-                              delete listCacheRef.current.unans;
-                              delete listCacheRef.current.drafts;
-                              delete listCacheRef.current.history;
+                              queryClient.invalidateQueries({ queryKey: ['unans'] });
+                              queryClient.invalidateQueries({ queryKey: ['drafts'] });
+                              queryClient.invalidateQueries({ queryKey: ['history'] });
+                              queryClient.removeQueries({ queryKey: ['detail', updCur.row], exact: true });
                             } else {
                               alert('保存に失敗しました。');
                             }
@@ -1346,7 +965,6 @@ export default function App() {
               )}
             </div>
           )}
-
 
           {/* 同期 */}
           {tab === 'sync' && (

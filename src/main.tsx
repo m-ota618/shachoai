@@ -77,8 +77,6 @@ createRoot(document.getElementById("root")!).render(
         <BrowserRouter>
           <Router />
         </BrowserRouter>
-        {/* ★ 一時的な可視ビーコン（OKになったら削除可） */}
-        <QueryBeacon />
       </ErrorBoundary>
       {/* <ReactQueryDevtools initialIsOpen={false} /> */}
     </QueryClientProvider>
