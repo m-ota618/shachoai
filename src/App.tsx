@@ -29,6 +29,47 @@ import { showApiError } from './utils/error';
 
 type Tab = 'unans' | 'drafts' | 'history' | 'update' | 'sync';
 
+/* =========================
+   キャッシュ基盤（App.tsx内に完結）
+   ========================= */
+type Entry<V> = { value: V; ts: number };
+function createLRUCache<K, V>(opt: { maxEntries: number; ttlMs?: number; maxItemBytes?: number }) {
+  const { maxEntries, ttlMs = 10 * 60 * 1000, maxItemBytes = 50_000 } = opt;
+  const map = new Map<K, Entry<V>>();
+  const now = () => Date.now();
+  const sizeOf = (v: V) => { try { return JSON.stringify(v).length; } catch { return 0; } };
+
+  const get = (k: K): V | undefined => {
+    const e = map.get(k);
+    if (!e) return;
+    if (ttlMs && now() - e.ts > ttlMs) { map.delete(k); return; }
+    // LRU（参照されたら末尾へ）
+    map.delete(k); map.set(k, e);
+    return e.value;
+  };
+  const set = (k: K, v: V) => {
+    if (maxItemBytes && sizeOf(v) > maxItemBytes) return; // 大きすぎは入れない
+    if (map.has(k)) map.delete(k);
+    map.set(k, { value: v, ts: now() });
+    if (map.size > maxEntries) {
+      const it = map.keys().next();
+      if (!it.done) {
+        map.delete(it.value as K); // done ガード後に削除
+      }
+    }
+  };
+  const del = (k: K) => { map.delete(k); };
+  const has = (k: K) => !!get(k);
+  const clear = () => { map.clear(); };
+  return { get, set, del, has, clear };
+}
+const LIST_TTL = 5 * 60 * 1000; // 一覧SWRのTTL 5分
+const onIdle = (fn: () => void) => {
+  // Safariなどはフォールバック
+  // @ts-ignore
+  return 'requestIdleCallback' in window ? (window as any).requestIdleCallback(fn, { timeout: 1200 }) : setTimeout(fn, 300);
+};
+
 const hueFor = (s: string) => {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
@@ -160,15 +201,57 @@ export default function App() {
     setNavOpen(false);
   };
 
+  /* =========================
+     一覧SWRキャッシュ & 競合排除
+     ========================= */
+  const listCacheRef = useRef<{
+    unans?: { ts: number; data: UnansweredItem[] };
+    drafts?: { ts: number; data: DraftItem[] };
+    history?: { ts: number; data: HistoryItem[] };
+  }>({});
+  const getCached = <T,>(b?: { ts: number; data: T }) => (b && Date.now() - b.ts < LIST_TTL ? b.data : null);
+  const seqRef = useRef({ unans: 0, drafts: 0, history: 0 });
+
+  /* =========================
+     詳細LRU＋先読み
+     ========================= */
+  const detailCache = useRef(createLRUCache<number, DetailT>({
+    maxEntries: 200,
+    ttlMs: 10 * 60 * 1000,
+    maxItemBytes: 50_000
+  }));
+  const inflightDetailRef = useRef<Map<number, Promise<void>>>(new Map());
+  const prefetchDetail = (row: number) => {
+    if (detailCache.current.has(row)) return;
+    if (inflightDetailRef.current.has(row)) return;
+    const p = (async () => {
+      try {
+        const d = await getDetail(row);
+        detailCache.current.set(row, d);
+      } finally {
+        inflightDetailRef.current.delete(row);
+      }
+    })();
+    inflightDetailRef.current.set(row, p);
+  };
+  const prefetchTopDetails = (rows: number[], n = 6) => {
+    rows.slice(0, n).forEach(prefetchDetail);
+  };
+
   // 未回答
   const [unans, setUnans] = useState<UnansweredItem[] | null>(null);
   const loadUnans = async () => {
-    setUnans(null);
+    const my = ++seqRef.current.unans;
+    const cached = getCached(listCacheRef.current.unans);
+    if (cached) setUnans(cached); else setUnans(null);
     try {
       const r = await getUnanswered();
+      if (my !== seqRef.current.unans) return; // 古いレスポンスは無視
+      listCacheRef.current.unans = { ts: Date.now(), data: r };
       setUnans(r);
+      prefetchTopDetails(r.map(x => x.row), 6);
     } catch (err: unknown) {
-      setUnans([]);
+      if (!cached) setUnans([]);
       showApiError(err, '未回答取得エラー');
     }
   };
@@ -176,12 +259,17 @@ export default function App() {
   // 下書き
   const [drafts, setDrafts] = useState<DraftItem[] | null>(null);
   const loadDrafts = async () => {
-    setDrafts(null);
+    const my = ++seqRef.current.drafts;
+    const cached = getCached(listCacheRef.current.drafts);
+    if (cached) setDrafts(cached); else setDrafts(null);
     try {
       const r = await getDrafts();
+      if (my !== seqRef.current.drafts) return;
+      listCacheRef.current.drafts = { ts: Date.now(), data: r };
       setDrafts(r);
+      prefetchTopDetails(r.map(x => x.row), 6);
     } catch (err: unknown) {
-      setDrafts([]);
+      if (!cached) setDrafts([]);
       showApiError(err, '下書き取得エラー');
     }
   };
@@ -189,12 +277,17 @@ export default function App() {
   // 履歴
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
   const loadHistory = async () => {
-    setHistory(null);
+    const my = ++seqRef.current.history;
+    const cached = getCached(listCacheRef.current.history);
+    if (cached) setHistory(cached); else setHistory(null);
     try {
       const r = await getHistoryList();
+      if (my !== seqRef.current.history) return;
+      listCacheRef.current.history = { ts: Date.now(), data: r };
       setHistory(r);
+      // 履歴は詳細APIが別のため詳細先読みは行わない
     } catch (err: unknown) {
-      setHistory([]);
+      if (!cached) setHistory([]);
       showApiError(err, '履歴取得エラー');
     }
   };
@@ -203,25 +296,38 @@ export default function App() {
   const [detail, setDetail] = useState<DetailT | null>(null);
   const [tabDetail, setTabDetail] = useState(false);
 
-  // CHANGED: ① 先に開く→後で読み込む（連打抑止つき）
+  /* =========================
+     詳細オープン＝LRU命中なら即描画→裏で最新化
+     ========================= */
   const openDetail = (() => {
-    let inflight = false;
+    let clicking = false;
     return async (row: number) => {
-      if (inflight) return;
-      inflight = true;
-      // 先に遷移して即反応させる
+      if (clicking) return;
+      clicking = true;
+
       setTabDetail(true);
-      setDetail(null);
-      setPred(null);
       setShowPred(false);
-      try {
-        const r = await getDetail(row);
-        setDetail(r);
-      } catch (err: unknown) {
-        showApiError(err, '詳細取得エラー');
-      } finally {
-        inflight = false;
+      setPred(null);
+
+      const cached = detailCache.current.get(row);
+      setDetail(cached || null); // 命中で即描画、外れはローディング
+
+      if (!inflightDetailRef.current.has(row)) {
+        const p = (async () => {
+          try {
+            const fresh = await getDetail(row);
+            detailCache.current.set(row, fresh);
+            setDetail(prev => (prev?.row === row || prev === null) ? fresh : prev);
+          } catch (err) {
+            if (!cached) setDetail(null);
+            showApiError(err, '詳細取得エラー');
+          } finally {
+            inflightDetailRef.current.delete(row);
+          }
+        })();
+        inflightDetailRef.current.set(row, p);
       }
+      clicking = false;
     };
   })();
 
@@ -229,14 +335,13 @@ export default function App() {
   const [historyDetail, setHistoryDetail] = useState<HistoryDetailT | null>(null);
   const [tabHistoryDetail, setTabHistoryDetail] = useState(false);
 
-  // CHANGED: ① 履歴も先に開く→後で読み込み（連打抑止つき）
+  // 履歴も“先に開いて後で読み込み”
   const openHistoryDetail = (() => {
     let inflight = false;
     return async (row: number) => {
-      if (inflight) return;
-      inflight = true;
-      setTabHistoryDetail(true);   // 即反応
-      setHistoryDetail(null);      // ローディング状態に
+      if (inflight) return; inflight = true;
+      setTabHistoryDetail(true);
+      setHistoryDetail(null);
       try {
         const r = await getHistoryDetail(row);
         setHistoryDetail(r);
@@ -258,7 +363,6 @@ export default function App() {
   // ★追加：一覧↔詳細の切替ヘルパー
   const openUpdateDetail = (it: UpdateItem) => {
     setUpdCur(it);
-    // 上にスクロールして詳細を最上部に
     try { window.scrollTo({ top: 0, behavior: 'auto' }); } catch {}
   };
 
@@ -274,7 +378,6 @@ export default function App() {
         const t = await getAllTopicOptionsPinnedFirst();
         setTopicOptions(t);
       } catch (err: unknown) {
-        // topicOptions は必須ではないので warn だけ
         console.warn(err);
       }
     }
@@ -391,8 +494,20 @@ export default function App() {
       setSyncMsg('');
       setBulkMsg('');
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
+
+  // 一覧のアイドル時プリロード
+  useEffect(() => {
+    if (tab === 'unans' && unans) {
+      onIdle(() => { loadDrafts(); });
+      onIdle(() => { loadHistory(); });
+    }
+    if (tab === 'drafts' && drafts) {
+      onIdle(() => { loadUnans(); });
+      onIdle(() => { loadHistory(); });
+    }
+  }, [tab, unans, drafts]);
 
   // === Icons (inline SVG) ===
   const I = {
@@ -453,7 +568,7 @@ export default function App() {
           {I.burger}
         </button>
 
-        {/* ここが追加：中央にロゴを置く層 */}
+        {/* 中央ロゴ */}
         <div className="topbar-center">
           <img src="/planter-lockup.svg" alt="Planter" className="brand-lockup-sm" />
         </div>
@@ -518,11 +633,13 @@ export default function App() {
               ) : (
                 <div className="cards">
                   {unans.map((it) => (
-                    // CHANGED: ③ 見た目はそのまま、ボタン相当の挙動を付与
                     <div
                       key={it.row}
                       className="card"
+                      data-row={it.row}
                       onClick={() => openDetail(it.row)}
+                      onMouseEnter={() => prefetchDetail(it.row)}
+                      onTouchStart={() => prefetchDetail(it.row)}
                       role="button"
                       tabIndex={0}
                       aria-label="詳細を開く"
@@ -555,11 +672,13 @@ export default function App() {
                     const clip = (it.draft || '').toString();
                     const clipText = clip.length > 80 ? clip.slice(0, 80) + '…' : clip;
                     return (
-                      // CHANGED: ③ 見た目はそのまま、ボタン相当の挙動を付与
                       <div
                         key={it.row}
                         className="card"
+                        data-row={it.row}
                         onClick={() => openDetail(it.row)}
+                        onMouseEnter={() => prefetchDetail(it.row)}
+                        onTouchStart={() => prefetchDetail(it.row)}
                         role="button"
                         tabIndex={0}
                         aria-label="詳細を開く"
@@ -580,7 +699,7 @@ export default function App() {
             </div>
           )}
 
-          {/* 履歴一覧（未回答/下書きと同じ .cards を使用） */}
+          {/* 履歴一覧 */}
           {tab === 'history' && !tabHistoryDetail && (
             <div className="wrap">
               <h2 className="page-title">履歴</h2>
@@ -591,7 +710,6 @@ export default function App() {
               ) : (
                 <div className="cards">
                   {history.map((it) => (
-                    // CHANGED: ② 見た目はそのまま、ボタン相当の挙動を付与
                     <div
                       key={it.row}
                       className="card"
@@ -616,7 +734,6 @@ export default function App() {
           )}
 
           {/* 詳細（未回答/下書き） */}
-          {/* CHANGED: detail が無い間はローディングカードを出す（質感は既存クラスのまま） */}
           {tabDetail && (
             <div className="wrap">
               <h2 className="page-title">詳細</h2>
@@ -688,7 +805,12 @@ export default function App() {
                       onClick={async () => {
                         if (!detail) return;
                         const ok = await saveAnswer(detail.row, detail.answer || '', detail.url || '');
-                        if (ok) alert('下書き保存しました');
+                        if (ok) {
+                          alert('下書き保存しました');
+                          // 詳細キャッシュ更新・一覧キャッシュは念のためinvalidate
+                          detailCache.current.set(detail.row, { ...detail });
+                          delete listCacheRef.current.drafts;
+                        }
                       }}
                     >
                       下書き保存
@@ -709,6 +831,11 @@ export default function App() {
                         const ok2 = await completeFromWeb(detail.row);
                         if (ok2) {
                           alert('回答済みにしました（公開用へ転送）');
+                          // 未回答/下書き/履歴の整合性
+                          detailCache.current.del(detail.row);
+                          delete listCacheRef.current.unans;
+                          delete listCacheRef.current.drafts;
+                          delete listCacheRef.current.history;
                           setTabDetail(false);
                           if (tab === 'unans') loadUnans();
                           if (tab === 'drafts') loadDrafts();
@@ -727,6 +854,10 @@ export default function App() {
                         const ok = await noChangeFromWeb(detail.row);
                         if (ok) {
                           alert('変更なしとして履歴に転送しました');
+                          detailCache.current.del(detail.row);
+                          delete listCacheRef.current.unans;
+                          delete listCacheRef.current.history;
+                          delete listCacheRef.current.drafts;
                           setTabDetail(false);
                           if (tab === 'unans') loadUnans();
                           if (tab === 'drafts') loadDrafts();
@@ -747,7 +878,6 @@ export default function App() {
           )}
 
           {/* 履歴詳細（即遷移→後読み込み） */}
-          {/* CHANGED: historyDetail が無い間はローディングカードを出す（質感は既存クラスのまま） */}
           {tabHistoryDetail && (
             <div className="wrap">
               <h2 className="page-title">履歴詳細</h2>
@@ -852,7 +982,7 @@ export default function App() {
                   </div>
                 </>
               ) : (
-                /* ===== 詳細ビュー（未回答/下書きと同じフロー） ===== */
+                /* ===== 詳細ビュー ===== */
                 <div>
                   <h2 className="page-title">詳細</h2>
                   <div className="card flat">
@@ -871,7 +1001,7 @@ export default function App() {
                       onChange={(e) => setUpdCur({ ...updCur, answer: e.target.value })}
                     />
 
-                    {/* URLは UrlListEditor を使用（既に導入済みの想定） */}
+                    {/* URLは UrlListEditor を使用 */}
                     <UrlListEditor
                       value={updCur.url || ''}
                       onChange={(joined) => setUpdCur({ ...updCur, url: joined })}
@@ -897,12 +1027,15 @@ export default function App() {
                             if (ok) {
                               alert('保存しました。');
                               await closeUpdateDetail(true); // 一覧へ戻り再読込
+                              // 影響しそうなキャッシュを無効化
+                              detailCache.current.del(updCur.row);
+                              delete listCacheRef.current.unans;
+                              delete listCacheRef.current.drafts;
+                              delete listCacheRef.current.history;
                             } else {
                               alert('保存に失敗しました。');
                             }
                           } catch (e: any) {
-                            // showApiError を使っているならこちらでもOK
-                            // showApiError(e, '保存エラー');
                             alert('エラー: ' + (e?.message || e));
                           }
                         }}
