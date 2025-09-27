@@ -202,17 +202,28 @@ export default function App() {
   // 詳細
   const [detail, setDetail] = useState<DetailT | null>(null);
   const [tabDetail, setTabDetail] = useState(false);
-  const openDetail = async (row: number) => {
-    try {
-      const r = await getDetail(row);
-      setDetail(r);
+
+  // CHANGED: ① 先に開く→後で読み込む（連打抑止つき）
+  const openDetail = (() => {
+    let inflight = false;
+    return async (row: number) => {
+      if (inflight) return;
+      inflight = true;
+      // 先に遷移して即反応させる
+      setTabDetail(true);
+      setDetail(null);
       setPred(null);
       setShowPred(false);
-      setTabDetail(true);
-    } catch (err: unknown) {
-      showApiError(err, '詳細取得エラー');
-    }
-  };
+      try {
+        const r = await getDetail(row);
+        setDetail(r);
+      } catch (err: unknown) {
+        showApiError(err, '詳細取得エラー');
+      } finally {
+        inflight = false;
+      }
+    };
+  })();
 
   // 履歴詳細
   const [historyDetail, setHistoryDetail] = useState<HistoryDetailT | null>(null);
@@ -497,7 +508,21 @@ export default function App() {
               ) : (
                 <div className="cards">
                   {unans.map((it) => (
-                    <div key={it.row} className="card" onClick={() => openDetail(it.row)}>
+                    // CHANGED: ③ 見た目はそのまま、ボタン相当の挙動を付与
+                    <div
+                      key={it.row}
+                      className="card"
+                      onClick={() => openDetail(it.row)}
+                      role="button"
+                      tabIndex={0}
+                      aria-label="詳細を開く"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          openDetail(it.row);
+                        }
+                      }}
+                    >
                       <div className="q">{it.question}</div>
                     </div>
                   ))}
@@ -520,7 +545,21 @@ export default function App() {
                     const clip = (it.draft || '').toString();
                     const clipText = clip.length > 80 ? clip.slice(0, 80) + '…' : clip;
                     return (
-                      <div key={it.row} className="card" onClick={() => openDetail(it.row)}>
+                      // CHANGED: ③ 見た目はそのまま、ボタン相当の挙動を付与
+                      <div
+                        key={it.row}
+                        className="card"
+                        onClick={() => openDetail(it.row)}
+                        role="button"
+                        tabIndex={0}
+                        aria-label="詳細を開く"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            openDetail(it.row);
+                          }
+                        }}
+                      >
                         <div className="q">{it.question}</div>
                         <div className="meta">下書き：{clipText}</div>
                       </div>
@@ -553,124 +592,133 @@ export default function App() {
           )}
 
           {/* 詳細（未回答/下書き） */}
-          {tabDetail && detail && (
+          {/* CHANGED: ② detail が無い間はローディングカードを出す（質感は既存クラスのまま） */}
+          {tabDetail && (
             <div className="wrap">
               <h2 className="page-title">詳細</h2>
 
-              <div className="card flat">
-                <div className="q">{detail.question}</div>
-                <div className="label">AIによる回答：</div>
-                <div className="box">{detail.aiAnswer}</div>
-
-                <div className="label">回答入力：</div>
-                <textarea
-                  id="detailAns"
-                  value={detail.answer || ''}
-                  onChange={(e) => setDetail({ ...detail, answer: e.target.value })}
-                  placeholder="短文で明確に入力してください。"
-                />
-
-                <UrlListEditor
-                  value={detail.url || ''}
-                  onChange={(joined) => setDetail({ ...detail, url: joined })}
-                  collapsedByDefault
-                  label="参照URL"
-                  help="1行に1URL（利用者に表示）"
-                />
-
-
-                <div className="row" style={{ marginTop: 8 }}>
-                  <button className="btn btn-future" id="btnPredict" ref={btnPredictRef} onClick={runPredict}>
-                    AIで回答作成
-                  </button>
-                </div>
-
-                {showPred && (
-                  <div id="predSection" style={{ marginTop: 8 }}>
-                    <div className="label">AIによる予想回答候補</div>
-                    <div className="help">webからの情報のため必ず目視確認の上ご利用ください。</div>
-                    <div id="predText" className="box">
-                      {pred?.text || ''}
-                    </div>
-
-                    <div className="label" style={{ marginTop: 8 }}>
-                      参考URL
-                    </div>
-                    <div id="predUrls" className="box" style={{ minHeight: 28, maxHeight: 96, overflow: 'auto' }}>
-                      {pred?.urls?.length ? pred.urls.join('\n') : '(参考URLは見つかりませんでした)'}
-                    </div>
-
-                    <div style={{ marginTop: 8 }}>
-                      <button className="btn btn-secondary" onClick={() => copy(pred?.text || '')}>
-                        本文をコピー
-                      </button>
-                      <button className="btn btn-secondary" onClick={() => copy((pred?.urls || []).join('\n'))}>
-                        URLをコピー
-                      </button>
-                    </div>
+              {!detail ? (
+                <div className="card flat">
+                  <div className="q">読み込み中…</div>
+                  <div className="a">
+                    <p>データを取得しています。しばらくお待ちください。</p>
                   </div>
-                )}
-
-                <div style={{ marginTop: 10 }}>
-                  <button
-                    className="btn btn-primary"
-                    onClick={async () => {
-                      if (!detail) return;
-                      const ok = await saveAnswer(detail.row, detail.answer || '', detail.url || '');
-                      if (ok) alert('下書き保存しました');
-                    }}
-                  >
-                    下書き保存
-                  </button>
-                  <button
-                    className="btn btn-primary"
-                    onClick={async () => {
-                      if (!detail) return;
-                      if (!detail.answer) {
-                        alert('回答を入力してください');
-                        return;
-                      }
-                      const ok1 = await saveAnswer(detail.row, detail.answer || '', detail.url || '');
-                      if (!ok1) {
-                        alert('保存に失敗しました');
-                        return;
-                      }
-                      const ok2 = await completeFromWeb(detail.row);
-                      if (ok2) {
-                        alert('回答済みにしました（公開用へ転送）');
-                        setTabDetail(false);
-                        if (tab === 'unans') loadUnans();
-                        if (tab === 'drafts') loadDrafts();
-                      } else {
-                        alert('転送に失敗しました');
-                      }
-                    }}
-                  >
-                    回答済みにする（公開用へ転送）
-                  </button>
-                  <button
-                    className="btn btn-secondary"
-                    onClick={async () => {
-                      if (!detail) return;
-                      if (!confirm('「変更しなくて良い」にして履歴に転送します。よろしいですか？')) return;
-                      const ok = await noChangeFromWeb(detail.row);
-                      if (ok) {
-                        alert('変更なしとして履歴に転送しました');
-                        setTabDetail(false);
-                        if (tab === 'unans') loadUnans();
-                        if (tab === 'drafts') loadDrafts();
-                      } else {
-                        alert('処理に失敗しました');
-                      }
-                    }}
-                  >
-                    変更しなくて良い
-                  </button>
-                  <button className="btn btn-secondary" onClick={() => setTabDetail(false)}>
-                    戻る
-                  </button>
                 </div>
-              </div>
+              ) : (
+                <div className="card flat">
+                  <div className="q">{detail.question}</div>
+                  <div className="label">AIによる回答：</div>
+                  <div className="box">{detail.aiAnswer}</div>
+
+                  <div className="label">回答入力：</div>
+                  <textarea
+                    id="detailAns"
+                    value={detail.answer || ''}
+                    onChange={(e) => setDetail({ ...detail, answer: e.target.value })}
+                    placeholder="短文で明確に入力してください。"
+                  />
+
+                  <UrlListEditor
+                    value={detail.url || ''}
+                    onChange={(joined) => setDetail({ ...detail, url: joined })}
+                    collapsedByDefault
+                    label="参照URL"
+                    help="1行に1URL（利用者に表示）"
+                  />
+
+                  <div className="row" style={{ marginTop: 8 }}>
+                    <button className="btn btn-future" id="btnPredict" ref={btnPredictRef} onClick={runPredict}>
+                      AIで回答作成
+                    </button>
+                  </div>
+
+                  {showPred && (
+                    <div id="predSection" style={{ marginTop: 8 }}>
+                      <div className="label">AIによる予想回答候補</div>
+                      <div className="help">webからの情報のため必ず目視確認の上ご利用ください。</div>
+                      <div id="predText" className="box">
+                        {pred?.text || ''}
+                      </div>
+
+                      <div className="label" style={{ marginTop: 8 }}>
+                        参考URL
+                      </div>
+                      <div id="predUrls" className="box" style={{ minHeight: 28, maxHeight: 96, overflow: 'auto' }}>
+                        {pred?.urls?.length ? pred.urls.join('\n') : '(参考URLは見つかりませんでした)'}
+                      </div>
+
+                      <div style={{ marginTop: 8 }}>
+                        <button className="btn btn-secondary" onClick={() => copy(pred?.text || '')}>
+                          本文をコピー
+                        </button>
+                        <button className="btn btn-secondary" onClick={() => copy((pred?.urls || []).join('\n'))}>
+                          URLをコピー
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  <div style={{ marginTop: 10 }}>
+                    <button
+                      className="btn btn-primary"
+                      onClick={async () => {
+                        if (!detail) return;
+                        const ok = await saveAnswer(detail.row, detail.answer || '', detail.url || '');
+                        if (ok) alert('下書き保存しました');
+                      }}
+                    >
+                      下書き保存
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={async () => {
+                        if (!detail) return;
+                        if (!detail.answer) {
+                          alert('回答を入力してください');
+                          return;
+                        }
+                        const ok1 = await saveAnswer(detail.row, detail.answer || '', detail.url || '');
+                        if (!ok1) {
+                          alert('保存に失敗しました');
+                          return;
+                        }
+                        const ok2 = await completeFromWeb(detail.row);
+                        if (ok2) {
+                          alert('回答済みにしました（公開用へ転送）');
+                          setTabDetail(false);
+                          if (tab === 'unans') loadUnans();
+                          if (tab === 'drafts') loadDrafts();
+                        } else {
+                          alert('転送に失敗しました');
+                        }
+                      }}
+                    >
+                      回答済みにする（公開用へ転送）
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={async () => {
+                        if (!detail) return;
+                        if (!confirm('「変更しなくて良い」にして履歴に転送します。よろしいですか？')) return;
+                        const ok = await noChangeFromWeb(detail.row);
+                        if (ok) {
+                          alert('変更なしとして履歴に転送しました');
+                          setTabDetail(false);
+                          if (tab === 'unans') loadUnans();
+                          if (tab === 'drafts') loadDrafts();
+                        } else {
+                          alert('処理に失敗しました');
+                        }
+                      }}
+                    >
+                      変更しなくて良い
+                    </button>
+                    <button className="btn btn-secondary" onClick={() => setTabDetail(false)}>
+                      戻る
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -865,4 +913,3 @@ export default function App() {
     </>
   );
 }
-
