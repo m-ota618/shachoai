@@ -199,7 +199,7 @@ export default function App() {
     }
   };
 
-  // 詳細
+  // 詳細（未回答/下書き）
   const [detail, setDetail] = useState<DetailT | null>(null);
   const [tabDetail, setTabDetail] = useState(false);
 
@@ -228,15 +228,25 @@ export default function App() {
   // 履歴詳細
   const [historyDetail, setHistoryDetail] = useState<HistoryDetailT | null>(null);
   const [tabHistoryDetail, setTabHistoryDetail] = useState(false);
-  const openHistoryDetail = async (row: number) => {
-    try {
-      const r = await getHistoryDetail(row);
-      setHistoryDetail(r);
-      setTabHistoryDetail(true);
-    } catch (err: unknown) {
-      showApiError(err, '履歴詳細エラー');
-    }
-  };
+
+  // CHANGED: ① 履歴も先に開く→後で読み込み（連打抑止つき）
+  const openHistoryDetail = (() => {
+    let inflight = false;
+    return async (row: number) => {
+      if (inflight) return;
+      inflight = true;
+      setTabHistoryDetail(true);   // 即反応
+      setHistoryDetail(null);      // ローディング状態に
+      try {
+        const r = await getHistoryDetail(row);
+        setHistoryDetail(r);
+      } catch (err: unknown) {
+        showApiError(err, '履歴詳細エラー');
+      } finally {
+        inflight = false;
+      }
+    };
+  })();
 
   // Update（検索・編集）
   const [topicOptions, setTopicOptions] = useState<string[]>([]);
@@ -581,7 +591,21 @@ export default function App() {
               ) : (
                 <div className="cards">
                   {history.map((it) => (
-                    <div key={it.row} className="card" onClick={() => openHistoryDetail(it.row)}>
+                    // CHANGED: ② 見た目はそのまま、ボタン相当の挙動を付与
+                    <div
+                      key={it.row}
+                      className="card"
+                      onClick={() => openHistoryDetail(it.row)}
+                      role="button"
+                      tabIndex={0}
+                      aria-label="履歴の詳細を開く"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          openHistoryDetail(it.row);
+                        }
+                      }}
+                    >
                       <div className="q">{it.question}</div>
                       <div className="meta">{it.time ? `発話日時：${it.time}` : ''}</div>
                     </div>
@@ -592,7 +616,7 @@ export default function App() {
           )}
 
           {/* 詳細（未回答/下書き） */}
-          {/* CHANGED: ② detail が無い間はローディングカードを出す（質感は既存クラスのまま） */}
+          {/* CHANGED: detail が無い間はローディングカードを出す（質感は既存クラスのまま） */}
           {tabDetail && (
             <div className="wrap">
               <h2 className="page-title">詳細</h2>
@@ -722,25 +746,41 @@ export default function App() {
             </div>
           )}
 
-          {/* 履歴詳細 */}
-          {tabHistoryDetail && historyDetail && (
+          {/* 履歴詳細（即遷移→後読み込み） */}
+          {/* CHANGED: historyDetail が無い間はローディングカードを出す（質感は既存クラスのまま） */}
+          {tabHistoryDetail && (
             <div className="wrap">
               <h2 className="page-title">履歴詳細</h2>
-              <div className="card flat">
-                <div className="q">{historyDetail.question}</div>
-                <div className="label">
-                  発話日時：<span>{historyDetail.dialogueTime}</span>
+
+              {!historyDetail ? (
+                <div className="card flat">
+                  <div className="q">読み込み中…</div>
+                  <div className="a">
+                    <p>データを取得しています。しばらくお待ちください。</p>
+                  </div>
+                  <div style={{ marginTop: 10 }}>
+                    <button className="btn btn-secondary" onClick={() => setTabHistoryDetail(false)}>
+                      戻る
+                    </button>
+                  </div>
                 </div>
-                <div className="label">AIによる回答：</div>
-                <div className="box">{historyDetail.aiAnswer}</div>
-                <div className="label">正しい回答（プランナーさん記入）：</div>
-                <div className="box">{historyDetail.answer}</div>
-                <div style={{ marginTop: 10 }}>
-                  <button className="btn btn-secondary" onClick={() => setTabHistoryDetail(false)}>
-                    戻る
-                  </button>
+              ) : (
+                <div className="card flat">
+                  <div className="q">{historyDetail.question}</div>
+                  <div className="label">
+                    発話日時：<span>{historyDetail.dialogueTime}</span>
+                  </div>
+                  <div className="label">AIによる回答：</div>
+                  <div className="box">{historyDetail.aiAnswer}</div>
+                  <div className="label">正しい回答（プランナーさん記入）：</div>
+                  <div className="box">{historyDetail.answer}</div>
+                  <div style={{ marginTop: 10 }}>
+                    <button className="btn btn-secondary" onClick={() => setTabHistoryDetail(false)}>
+                      戻る
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
 
