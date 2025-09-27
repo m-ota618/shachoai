@@ -64,10 +64,31 @@ function createLRUCache<K, V>(opt: { maxEntries: number; ttlMs?: number; maxItem
   return { get, set, del, has, clear };
 }
 const LIST_TTL = 5 * 60 * 1000; // 一覧SWRのTTL 5分
-const onIdle = (fn: () => void) => {
-  // Safariなどはフォールバック
-  // @ts-ignore
-  return 'requestIdleCallback' in window ? (window as any).requestIdleCallback(fn, { timeout: 1200 }) : setTimeout(fn, 300);
+
+/* =========================
+   安全な onIdle ヘルパー（型競合しない）
+   ========================= */
+type IdleHandle = { cancel: () => void };
+const onIdle = (fn: () => void): IdleHandle => {
+  let cancelled = false;
+  const call = () => { if (!cancelled) fn(); };
+
+  const ric: any =
+    typeof window !== 'undefined' && (window as any).requestIdleCallback
+      ? (window as any).requestIdleCallback
+      : null;
+  const cic: any =
+    typeof window !== 'undefined' && (window as any).cancelIdleCallback
+      ? (window as any).cancelIdleCallback
+      : null;
+
+  if (typeof ric === 'function') {
+    const id = ric(call, { timeout: 1200 });
+    return { cancel: () => { cancelled = true; if (typeof cic === 'function') cic(id); } };
+  } else {
+    const id = window.setTimeout(call, 300);
+    return { cancel: () => { cancelled = true; window.clearTimeout(id); } };
+  }
 };
 
 /* =========================
@@ -146,7 +167,7 @@ function UrlListEditor(props: {
   React.useEffect(() => {
     setUrls(toArray(value));
     if ((value && value.trim()) || !collapsedByDefault) setExpanded(true);
-  }, [value]);
+  }, [value, collapsedByDefault]);
 
   const commit = (arr: string[]) => {
     setUrls(arr);
@@ -415,6 +436,7 @@ export default function App() {
       };
       setDrafts(prev => (prev ? prev.filter(x => x.row !== row) : prev));
     }
+    // 履歴はGAS成功後に自然に増える想定
     detailCache.current.del(row);
   };
 
@@ -467,12 +489,11 @@ export default function App() {
     const flushSoon = () => flushOps();
     window.addEventListener('online', flushSoon);
     window.addEventListener('focus', flushSoon);
-    const idleId = onIdle(flushSoon);
+    const idleHandle = onIdle(flushSoon);
     return () => {
       window.removeEventListener('online', flushSoon);
       window.removeEventListener('focus', flushSoon);
-      // @ts-ignore
-      if (typeof cancelIdleCallback === 'function') (window as any).cancelIdleCallback?.(idleId);
+      idleHandle.cancel();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
