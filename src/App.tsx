@@ -129,6 +129,33 @@ const savePending = (rows: number[]) => {
   try { localStorage.setItem(PENDING_KEY, JSON.stringify(rows)); } catch {}
 };
 
+/* =========================
+   「成功時に確実に消える」：TTL付き“隠しリスト”
+   ========================= */
+const HIDE_KEY = 'planter/hiddenRows/v1';
+const HIDE_TTL_MS = 3 * 60 * 1000; // 揺り戻し抑制のため 3分隠す（必要に応じて調整可）
+type HiddenMap = Record<string, number>; // row -> expiresAt(ms)
+const loadHidden = (): HiddenMap => {
+  try { return JSON.parse(localStorage.getItem(HIDE_KEY) || '{}'); } catch { return {}; }
+};
+const saveHidden = (m: HiddenMap) => {
+  try { localStorage.setItem(HIDE_KEY, JSON.stringify(m)); } catch {}
+};
+const pruneHiddenObj = (obj: HiddenMap): HiddenMap => {
+  const now = nowMs();
+  let changed = false;
+  const next: HiddenMap = {};
+  for (const k of Object.keys(obj)) {
+    const exp = obj[k];
+    if (typeof exp === 'number' && exp > now) {
+      next[k] = exp;
+    } else {
+      changed = true;
+    }
+  }
+  return changed ? next : obj;
+};
+
 const hueFor = (s: string) => {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
@@ -262,13 +289,18 @@ const CardShell: React.FC<{
   children?: React.ReactNode;
 }> = ({ isPending, isFailed, onRetry, children }) => {
   if (isPending) {
+    // ▶︎ 控えめ表示に調整
     return (
-      <div className="card pending" aria-live="polite">
+      <div className="card pending" aria-live="polite" role="status">
         <div className="row" style={{ alignItems: 'center', gap: 8 }}>
           <Spinner />
-          <div className="q">送信中…</div>
+          <span className="meta" style={{ fontSize: '0.92em', opacity: 0.85 }}>
+            送信中…
+          </span>
         </div>
-        <div className="meta">通信状況により数分かかることがあります</div>
+        <div className="meta" style={{ fontSize: '0.86em', opacity: 0.75 }}>
+          通信状況により数分かかることがあります
+        </div>
       </div>
     );
   }
@@ -412,11 +444,41 @@ export default function App() {
   const markFailed   = (row: number) => setFailedRows(s => new Set(s).add(row));
   const clearFailed  = (row: number) => setFailedRows(s => { const n = new Set(s); n.delete(row); return n; });
 
+  /* =========================
+     TTL付き“隠しリスト”の状態
+     ========================= */
+  const [hiddenRows, setHiddenRows] = useState<HiddenMap>(() => pruneHiddenObj(loadHidden()));
+  useEffect(() => { saveHidden(hiddenRows); }, [hiddenRows]);
+  // 定期的に期限切れを掃除（軽量）
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      setHiddenRows(prev => pruneHiddenObj(prev));
+    }, 30_000);
+    return () => window.clearInterval(t);
+  }, []);
+  const isHidden = (row: number) => {
+    const exp = hiddenRows[String(row)];
+    if (!exp) return false;
+    if (exp <= nowMs()) {
+      // 期限切れなら即掃除
+      setHiddenRows(prev => {
+        const { [String(row)]: _, ...rest } = prev;
+        return rest;
+      });
+      return false;
+    }
+    return true;
+  };
+  const markHidden = (row: number, ttlMs = HIDE_TTL_MS) => {
+    setHiddenRows(prev => ({ ...prev, [String(row)]: nowMs() + ttlMs }));
+  };
+
   const enqueueOp = (op: Omit<QueuedOp, 'id' | 'tryCount' | 'nextAt'>) => {
     const q: QueuedOp = { ...op, id: uuid(), tryCount: 0, nextAt: nowMs() };
     setOpQueue(prev => [...prev, q]);
     addPending(op.row);           // 即ゴースト化
     clearFailed(op.row);          // 失敗表示の解除
+    markHidden(op.row);           // ← 成功前でもUIの“揺り戻し”を防ぐため一時的に隠す
     onIdle(() => flushOps());
   };
 
@@ -457,11 +519,12 @@ export default function App() {
             const ok = await noChangeFromWeb(op.row);
             if (!ok) throw new Error('noChangeFromWeb returned false');
           }
-          // 成功：キューから除去、ゴースト解除、一覧からフェードアウト的に削除
+          // 成功：キューから除去、ゴースト解除、一覧から削除（UIは既にTTLで隠れている）
           q = q.filter(x => x.id !== op.id);
           removeFromLists(op.row);
           removePending(op.row);
           clearFailed(op.row);
+          // 成功後は隠しTTLを短縮/除去してもよいが、サーバ反映遅延を考慮して維持
           changed = true;
         } catch (e) {
           // 失敗：いったん失敗表示にしてバックオフ再試行
@@ -732,7 +795,7 @@ export default function App() {
     ),
     history: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-        <path d="M3 12a9 9 0 1 0 3-6.7M3 3v6h6M12 7v6l4 2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+        <path d="M3 12a9 9 1 1 0 3-6.7M3 3v6h6M12 7v6l4 2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
       </svg>
     ),
     update: (
@@ -829,51 +892,54 @@ export default function App() {
               <h2 className="page-title">未回答</h2>
               {unans === null ? (
                 <div className="skeleton">読み込み中...</div>
-              ) : unans.length === 0 ? (
-                <div className="empty">未回答はありません</div>
-              ) : (
-                <div className="cards">
-                  {unans.map((it) => {
-                    const isPending = pendingRows.has(it.row);
-                    const isFailed  = failedRows.has(it.row);
-                    return (
-                      <CardShell
-                        key={it.row}
-                        isPending={isPending}
-                        isFailed={isFailed}
-                        onRetry={
-                          isFailed
-                            ? () => {
-                                clearFailed(it.row);
-                                addPending(it.row);
-                                // 同rowのキューを前倒し
-                                setOpQueue(prev => prev.map(op => op.row === it.row ? { ...op, nextAt: nowMs() } : op));
-                                onIdle(() => flushOps());
-                              }
-                            : undefined
-                        }
-                      >
-                        <div
-                          className="q"
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => !isPending && openDetail(it.row)}
-                          onKeyDown={(e) => {
-                            if ((e.key === 'Enter' || e.key === ' ') && !isPending) {
-                              e.preventDefault();
-                              openDetail(it.row);
-                            }
-                          }}
-                          onMouseEnter={() => prefetchDetail(it.row)}
-                          onTouchStart={() => prefetchDetail(it.row)}
+              ) : (() => {
+                const visible = unans.filter(it => !isHidden(it.row));
+                return visible.length === 0 ? (
+                  <div className="empty">未回答はありません</div>
+                ) : (
+                  <div className="cards">
+                    {visible.map((it) => {
+                      const isPending = pendingRows.has(it.row);
+                      const isFailed  = failedRows.has(it.row);
+                      return (
+                        <CardShell
+                          key={it.row}
+                          isPending={isPending}
+                          isFailed={isFailed}
+                          onRetry={
+                            isFailed
+                              ? () => {
+                                  clearFailed(it.row);
+                                  addPending(it.row);
+                                  // 同rowのキューを前倒し
+                                  setOpQueue(prev => prev.map(op => op.row === it.row ? { ...op, nextAt: nowMs() } : op));
+                                  onIdle(() => flushOps());
+                                }
+                              : undefined
+                          }
                         >
-                          {it.question}
-                        </div>
-                      </CardShell>
-                    );
-                  })}
-                </div>
-              )}
+                          <div
+                            className="q"
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => !isPending && openDetail(it.row)}
+                            onKeyDown={(e) => {
+                              if ((e.key === 'Enter' || e.key === ' ') && !isPending) {
+                                e.preventDefault();
+                                openDetail(it.row);
+                              }
+                            }}
+                            onMouseEnter={() => prefetchDetail(it.row)}
+                            onTouchStart={() => prefetchDetail(it.row)}
+                          >
+                            {it.question}
+                          </div>
+                        </CardShell>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           )}
 
@@ -883,53 +949,56 @@ export default function App() {
               <h2 className="page-title">下書き</h2>
               {drafts === null ? (
                 <div className="skeleton">読み込み中...</div>
-              ) : drafts.length === 0 ? (
-                <div className="empty">下書きはありません</div>
-              ) : (
-                <div className="cards">
-                  {drafts.map((it) => {
-                    const clip = (it.draft || '').toString();
-                    const clipText = clip.length > 80 ? clip.slice(0, 80) + '…' : clip;
-                    const isPending = pendingRows.has(it.row);
-                    const isFailed  = failedRows.has(it.row);
-                    return (
-                      <CardShell
-                        key={it.row}
-                        isPending={isPending}
-                        isFailed={isFailed}
-                        onRetry={
-                          isFailed
-                            ? () => {
-                                clearFailed(it.row);
-                                addPending(it.row);
-                                setOpQueue(prev => prev.map(op => op.row === it.row ? { ...op, nextAt: nowMs() } : op));
-                                onIdle(() => flushOps());
-                              }
-                            : undefined
-                        }
-                      >
-                        <div
-                          className="q"
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => !isPending && openDetail(it.row)}
-                          onKeyDown={(e) => {
-                            if ((e.key === 'Enter' || e.key === ' ') && !isPending) {
-                              e.preventDefault();
-                              openDetail(it.row);
-                            }
-                          }}
-                          onMouseEnter={() => prefetchDetail(it.row)}
-                          onTouchStart={() => prefetchDetail(it.row)}
+              ) : (() => {
+                const visible = drafts.filter(it => !isHidden(it.row));
+                return visible.length === 0 ? (
+                  <div className="empty">下書きはありません</div>
+                ) : (
+                  <div className="cards">
+                    {visible.map((it) => {
+                      const clip = (it.draft || '').toString();
+                      const clipText = clip.length > 80 ? clip.slice(0, 80) + '…' : clip;
+                      const isPending = pendingRows.has(it.row);
+                      const isFailed  = failedRows.has(it.row);
+                      return (
+                        <CardShell
+                          key={it.row}
+                          isPending={isPending}
+                          isFailed={isFailed}
+                          onRetry={
+                            isFailed
+                              ? () => {
+                                  clearFailed(it.row);
+                                  addPending(it.row);
+                                  setOpQueue(prev => prev.map(op => op.row === it.row ? { ...op, nextAt: nowMs() } : op));
+                                  onIdle(() => flushOps());
+                                }
+                              : undefined
+                          }
                         >
-                          {it.question}
-                        </div>
-                        <div className="meta">下書き：{clipText}</div>
-                      </CardShell>
-                    );
-                  })}
-                </div>
-              )}
+                          <div
+                            className="q"
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => !isPending && openDetail(it.row)}
+                            onKeyDown={(e) => {
+                              if ((e.key === 'Enter' || e.key === ' ') && !isPending) {
+                                e.preventDefault();
+                                openDetail(it.row);
+                              }
+                            }}
+                            onMouseEnter={() => prefetchDetail(it.row)}
+                            onTouchStart={() => prefetchDetail(it.row)}
+                          >
+                            {it.question}
+                          </div>
+                          <div className="meta">下書き：{clipText}</div>
+                        </CardShell>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           )}
 
@@ -1147,7 +1216,7 @@ export default function App() {
                 <>
                   <h2 className="page-title">データ編集</h2>
 
-                  {/* 検索フォーム */}
+                {/* 検索フォーム */}
                   <div className="row">
                     <div style={{ flex: '1 1 280px' }}>
                       <input
