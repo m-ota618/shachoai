@@ -1,4 +1,3 @@
-// src/pages/AdminTenants.tsx
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
@@ -52,7 +51,6 @@ export default function AdminTenants() {
             </button>
           </div>
 
-          {/* 状態表示 */}
           {loading && (
             <div className="skeleton" style={{ marginTop: 10 }}>読み込み中...</div>
           )}
@@ -69,12 +67,13 @@ export default function AdminTenants() {
               <div className="help" style={{ marginTop: 6 }}>
                 管理者のはずなのに表示されない場合は
                 <code style={{ margin: "0 4px" }}>get_is_admin()</code> /
-                <code style={{ margin: "0 4px" }}>get_accessible_orgs()</code> の実装と権限をご確認ください。
+                <code style={{ margin: "0 4px" }}>get_accessible_orgs()</code> /
+                <code style={{ margin: "0 4px" }}>ensure_membership_for_current_user()</code>
+                の実装と権限をご確認ください。
               </div>
             </div>
           )}
 
-          {/* 一覧 */}
           {!loading && !err && list.length > 0 && (
             <ul
               className="cards"

@@ -1,4 +1,3 @@
-// src/router.tsx
 import React, { useEffect, useRef, useState } from "react";
 import { Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "./lib/supabase";
@@ -56,13 +55,13 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  /* ★ 自動誘導：/admin 配下は完全スキップ。まず管理者優先で判定 */
+  /* ★ 自動誘導：/admin 配下はスキップ。非管理者は所属解決を試みる */
   useEffect(() => {
     if (!ready || !signedIn) return;
 
     const pathname = loc.pathname || "/";
 
-    // /admin 直下 or /admin/... は自動リダイレクト一切禁止（URLと画面がズレないように）
+    // /admin は自動リダイレクト禁止（URLと画面がズレないように）
     if (pathname === "/admin" || pathname.startsWith("/admin/")) return;
 
     const seg = pathname.split("/").filter(Boolean);
@@ -75,34 +74,48 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     (async () => {
       if (hasSlug) return; // すでに /:slug/... にいるなら誘導不要
 
-      // ★ 1) 管理者かどうか（= @starbasket-ai.com）を最優先で判定
+      // ★ 1) 管理者かどうか
       let isAdmin = false;
       try {
         const r = await supabase.rpc("get_is_admin");
         isAdmin = !!r.data;
-      } catch {
-        // 失敗時は非管理者扱いで続行
-      }
+      } catch {/* 非管理者として続行 */}
       if (isAdmin) {
         navigate("/admin/tenants", { replace: true });
         return;
       }
 
-      // ★ 2) 非管理者は所属テナントで誘導
+      // ★ 2) 所属テナント（既存チェック）
       const { data, error } = await supabase.rpc("get_accessible_orgs");
-      if (error) return; // 失敗時は現状維持
-      const list = (data as { slug: string }[]) || [];
-
-      if (list.length === 1) {
-        navigate(`/${list[0].slug}/app`, { replace: true });
-      } else {
-        // 0件（未所属など）はログインへ（必要に応じて案内ページに変更可）
-        navigate("/login", { replace: true });
+      if (!error) {
+        const list = (data as { slug: string }[]) || [];
+        if (list.length === 1) {
+          navigate(`/${list[0].slug}/app`, { replace: true });
+          return;
+        }
+        if (list.length > 1) {
+          navigate("/admin/tenants", { replace: true });
+          return;
+        }
       }
+
+      // ★変更: 3) 未所属 → まず作る（ensure_membership_for_current_user）
+      try {
+        const r2 = await supabase.rpc("ensure_membership_for_current_user");
+        const ensured = (r2.data as { slug: string }[]) || [];
+        if (ensured.length > 0 && ensured[0]?.slug) {
+          navigate(`/${ensured[0].slug}/app`, { replace: true });
+          return;
+        }
+      } catch {/* noop */}
+
+      // ★変更: 4) どうしても解決できない場合 → /login に戻さず /app に留める（署名は維持）
+      // （/app では UI 上で「アクセス権がありません」などの案内を出す想定）
+      navigate("/app", { replace: true });
     })();
   }, [ready, signedIn, loc.pathname, navigate]);
 
-  // 初回ロード中はローディング（ログイン画面へ即リダイレクトはしない）
+  // 初回ロード中はローディング
   if (!ready) {
     return (
       <main className="content">

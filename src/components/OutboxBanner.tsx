@@ -10,18 +10,20 @@ export default function OutboxBanner() {
   const [sending, setSending] = React.useState<boolean>(false);
   const [error, setError] = React.useState<string>('');
 
-  // 件数のサブスクライブ
+  // 件数の初期読み込み + サブスクライブ（items をそのまま反映）
   React.useEffect(() => {
     let mounted = true;
-    const refresh = async () => {
+
+    const init = async () => {
       const items = await getOutboxAll();
       if (mounted) setCount(items.length);
     };
-    refresh();
+    init();
 
-    const unsub = subscribeOutbox(() => {
-      refresh();
+    const unsub = subscribeOutbox((items) => {
+      if (mounted) setCount(items.length); // ✅ 通知のたびに件数を即反映
     });
+
     return () => {
       mounted = false;
       unsub();
@@ -34,9 +36,12 @@ export default function OutboxBanner() {
     setSending(true);
     setError('');
     try {
-      const { processed, errors } = await processOutbox();
+      const { processed, errors, remaining } = await processOutbox();
 
-      // 成功分があれば最小限 invalidate
+      // ✅ 送信後の残件数をそのまま反映（これで確実に 0 → 非表示）
+      setCount(remaining);
+
+      // 一覧の整合（成功があれば最小限 invalidate）
       if (processed > 0) {
         await Promise.all([
           qc.invalidateQueries({ queryKey: ['unans'] }),
@@ -48,7 +53,7 @@ export default function OutboxBanner() {
       if (errors > 0) {
         setError('一部の送信に失敗しました。あとで再度お試しください。');
       }
-    } catch (e: any) {
+    } catch {
       setError('送信中にエラーが発生しました。');
     } finally {
       setSending(false);

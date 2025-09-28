@@ -29,28 +29,43 @@ export default function Login() {
       const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
       if (error) { setMsg(`ログイン失敗：${error.message}`); return; }
 
-      // ★ まず管理者かどうか（= @starbasket-ai.com）を判定
+      // ★追加：サインイン直後に必ず自動所属付与を試す（失敗しても続行）
+      try {
+        await supabase.rpc("ensure_membership_for_current_user");
+      } catch {
+        /* noop */
+      }
+
+      // ★ 管理者判定（@starbasket-ai.com）
       let isAdmin = false;
       try {
         const r = await supabase.rpc("get_is_admin");
         isAdmin = !!r.data;
       } catch {
-        // 失敗時は非管理者扱いで続行
+        /* 非管理者で続行 */
       }
       if (isAdmin) {
         nav("/admin/tenants", { replace: true });
         return;
       }
 
-      // ★ 非管理者は所属テナントへ
-      const { data, error: rpcErr } = await supabase.rpc("get_accessible_orgs");
-      const list = (!rpcErr ? (data as { slug: string }[] | null) : null) ?? [];
+      // ★ 所属テナント取得 → 件数で分岐
+      const r1 = await supabase.rpc("get_accessible_orgs");
+      const list = (r1.data as { slug: string }[]) || [];
+
       if (list.length === 1) {
         nav(`/${list[0].slug}/app`, { replace: true });
-      } else {
-        // 未所属や取得失敗時のフォールバック
-        nav("/app", { replace: true });
+        return;
       }
+      if (list.length > 1) {
+        // 一般ユーザーでも選択画面として流用
+        nav("/admin/tenants", { replace: true });
+        return;
+      }
+
+      // ★ 未所属：サインイン状態は維持して /app に退避（ループ回避）
+      setMsg("アクセスできるテナントが見つかりません。管理者にお問い合わせください。");
+      nav("/app", { replace: true });
     } catch (e: any) {
       setMsg(`ログイン失敗：${e?.message ?? "不明なエラー"}`);
     } finally {

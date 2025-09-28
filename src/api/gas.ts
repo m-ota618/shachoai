@@ -1,3 +1,4 @@
+// src/api/gas.ts
 import { supabase } from '../lib/supabase';
 import type {
   UnansweredItem,
@@ -65,6 +66,12 @@ export class ApiError extends Error {
     this.raw = opts?.raw;
   }
 }
+
+/* === 追加: 送信オプション型（冪等キーなどを渡す） === */
+export type SendOptions = {
+  idempotencyKey?: string; // 冪等化用キー（GAS 側へそのまま送る）
+  rowHash?: string;        // 競合検出したい場合に利用（任意）
+};
 
 async function postJSON<T = unknown>(
   action: string,
@@ -146,14 +153,18 @@ export async function saveAnswer(row: number, answer: string, url: string): Prom
   const r = await postJSON('saveAnswer', { row, answer, url });
   return r === true || (r as { ok?: boolean })?.ok === true;
 }
-export async function completeFromWeb(row: number): Promise<boolean> {
-  const r = await postJSON('completeFromWeb', { row });
+
+/* === 変更: 第2引数 opt を追加し、payload にマージ === */
+export async function completeFromWeb(row: number, opt: SendOptions = {}): Promise<boolean> {
+  const r = await postJSON('completeFromWeb', { row, ...opt });
   return r === true || (r as { ok?: boolean })?.ok === true;
 }
-export async function noChangeFromWeb(row: number): Promise<boolean> {
-  const r = await postJSON('noChangeFromWeb', { row });
+
+export async function noChangeFromWeb(row: number, opt: SendOptions = {}): Promise<boolean> {
+  const r = await postJSON('noChangeFromWeb', { row, ...opt });
   return r === true || (r as { ok?: boolean })?.ok === true;
 }
+
 export async function getHistoryList(): Promise<HistoryItem[]> {
   const r = await postJSON('getHistoryList');
   return arr<HistoryItem>(r);
