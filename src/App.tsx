@@ -700,6 +700,47 @@ export default function App() {
                     help="1行に1URL（利用者に表示）"
                   />
 
+                  {/* ▼ AIで回答作成（復活） */}
+                  <div className="row" style={{ marginTop: 8 }}>
+                    <button
+                      className="btn btn-future"
+                      id="btnPredict"
+                      ref={btnPredictRef}
+                      onClick={runPredict}
+                    >
+                      AIで回答作成
+                    </button>
+                  </div>
+
+                  {/* ▼ 予想回答の表示（復活） */}
+                  {showPred && (
+                    <div id="predSection" style={{ marginTop: 8 }}>
+                      <div className="label">AIによる予想回答候補</div>
+                      <div className="help">webからの情報のため必ず目視確認の上ご利用ください。</div>
+
+                      <div id="predText" className="box">
+                        {pred?.text || ''}
+                      </div>
+
+                      <div className="label" style={{ marginTop: 8 }}>
+                        参考URL
+                      </div>
+                      <div id="predUrls" className="box" style={{ minHeight: 28, maxHeight: 96, overflow: 'auto' }}>
+                        {pred?.urls?.length ? pred.urls.join('\n') : '(参考URLは見つかりませんでした)'}
+                      </div>
+
+                      <div style={{ marginTop: 8 }}>
+                        <button className="btn btn-secondary" onClick={() => copy(pred?.text || '')}>
+                          本文をコピー
+                        </button>
+                        <button className="btn btn-secondary" onClick={() => copy((pred?.urls || []).join('\n'))}>
+                          URLをコピー
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+
                   <div
                     style={{
                       marginTop: 10,

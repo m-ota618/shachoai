@@ -2,23 +2,22 @@ import React, { useRef, useState } from "react";
 import { Mic, Square, Wand2, Eraser } from "lucide-react";
 
 /**
- * 単独話者向け：音声入力＋（整形＋要約）一括
- * - 音声入力: Web Speech API（Chrome前提）
+ * 音声入力 + 文章修正（ゼロ課金・ローカルルールベース）
  * - 録音中は入力欄を更新しない（停止で一括反映）
- * - 「整形＋要約」: 句読点補正・体裁整形 → 100字要約を末尾に追記（ゼロ課金）
+ * - 「誤字・日本語修正」ボタン:
+ *    口癖/冗長の除去、表記ゆれの統一、よくある誤変換の修正、
+ *    句読点/文末補正、スペース/改行整理 などを行い、入力欄のテキストを **置換** します
  */
 export default function VoiceComposeBar({
   value,
   onChange,
-  summarizeChars = 100,
 }: {
   value: string;
   onChange: (v: string) => void;
-  summarizeChars?: number;
 }) {
   const [recState, setRecState] = useState<"idle" | "recording">("idle");
   const [interim, setInterim] = useState("");
-  const bufferRef = useRef<string>(""); // 停止するまでの最終確定テキストを貯める
+  const bufferRef = useRef<string>("");
   const recRef = useRef<any>(null);
 
   // ====== 音声入力 ======
@@ -29,7 +28,7 @@ export default function VoiceComposeBar({
       alert("このブラウザは音声認識に未対応です。Chromeを推奨します。");
       return;
     }
-    bufferRef.current = ""; // 新規録音のたびにバッファを空に
+    bufferRef.current = "";
     setInterim("");
 
     const rec = new SR();
@@ -42,12 +41,12 @@ export default function VoiceComposeBar({
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
         if (r.isFinal) {
-          bufferRef.current += r[0].transcript; // ← 入力欄には反映しない
+          bufferRef.current += r[0].transcript; // ← 停止まで入力欄には入れない
         } else {
           it += r[0].transcript;
         }
       }
-      setInterim(it); // 進行中の見た目だけ
+      setInterim(it);
     };
 
     rec.onerror = (e: any) => console.error("speech error", e);
@@ -62,100 +61,111 @@ export default function VoiceComposeBar({
     if (rec) rec.stop();
     setRecState("idle");
     setInterim("");
-    // 停止したタイミングで初めて入力欄に反映
     const add = bufferRef.current.trim();
     if (add) {
-      onChange((value || "") + add);
+      onChange((value || "") + add); // 録音分をここで初めて追記
     }
     bufferRef.current = "";
   };
 
-  // ====== 整形（句読点・体裁） ======
-  function localFormat(text: string): string {
-    let t = text ?? "";
-    if (!t.trim()) return t;
-
-    // 改行統一
-    t = t.replace(/\r\n?/g, "\n");
-
-    // 口癖・冗長
-    const fillers = ["えー", "その", "まあ", "なんか", "えっと", "あの", "みたいな", "とりあえず", "やっぱり"];
-    fillers.forEach(f => {
-      const re = new RegExp(`(^|[\\s、。])${f}(?:[\\u3063\\u30FC\\s]*)?`, "g");
-      t = t.replace(re, "$1");
-    });
-
-    // 記号正規化
-    t = t
-      .replace(/\u3000/g, " ")
+  // ====== 修正ルール群 ======
+  function normalizeSymbols(t: string): string {
+    return t
+      .replace(/\r\n?/g, "\n")
+      .replace(/\u3000/g, " ") // 全角スペース→半角
       .replace(/，/g, "、")
       .replace(/．/g, "。")
       .replace(/!\s*/g, "！")
       .replace(/\?\s*/g, "？");
-
-    // 行ごとに句点補完
-    t = t
-      .split("\n")
-      .map(line => {
-        const s = line.trim();
-        if (!s) return "";
-        if (/[。！？」）\]\}、]$/.test(s)) return s;
-        return s + "。";
-      })
-      .join("\n");
-
-    // 連続改行圧縮・空白整理
-    t = t.replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ");
-    return t.trim();
   }
 
-  // ====== 要約（100字目安の素朴抽出） ======
-  function localSummarize(text: string, maxChars: number): string {
-    const src = localFormat(text);
-    if (!src) return "";
-
-    const sentences = src
-      .split(/(?:。|！|？|\n)+/)
-      .map(s => s.trim())
-      .filter(Boolean);
-
-    if (sentences.length === 0) return "";
-
-    const stop = new Set(["は","が","を","に","で","と","も","へ","の","や","から","まで","より","そして","また","ため","ので","です","ます","でした"]);
-    const freq: Record<string, number> = {};
-    sentences.forEach(s => {
-      s.replace(/[^\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}\w]/gu, " ")
-        .split(/\s+/)
-        .filter(w => w && !stop.has(w) && w.length >= 2)
-        .forEach(w => { freq[w] = (freq[w] || 0) + 1; });
+  // よくある口癖・冗長語の除去（文頭/区切り語の直後のみ）
+  function removeFillers(t: string): string {
+    const fillers = [
+      "えー","えっと","その","あの","まあ","なんか","みたいな","とりあえず","やっぱり","ていうか","なんというか",
+    ];
+    fillers.forEach(f => {
+      const re = new RegExp(`(^|[\\s、。])${f}(?:[ー〜っ\\s]*)`, "g");
+      t = t.replace(re, "$1");
     });
-    const score = (s: string) =>
-      s.split(/\s+/).reduce((acc, w) => acc + (freq[w] || 0), 0) + Math.min(10, s.length / 8);
-
-    const ranked = sentences
-      .map((s, idx) => ({ s, idx, sc: score(s) }))
-      .sort((a, b) => b.sc - a.sc || a.idx - b.idx);
-
-    let out: string[] = [];
-    let total = 0;
-    for (const r of ranked) {
-      const add = r.s + "。";
-      if (total + add.length > maxChars && out.length > 0) continue;
-      out.push(add);
-      total += add.length;
-      if (total >= maxChars) break;
-    }
-    if (out.length === 0) out = [sentences[0] + "。"];
-    return out.join("").trim();
+    return t;
   }
 
-  // ====== ボタン：整形＋要約（1アクション） ======
-  const doFormatAndSummarize = () => {
+  // 音声誤変換・表記ゆれの補正（代表例）
+  // 音声誤変換・表記ゆれの補正（代表例）
+function fixCommonMishears(t: string): string {
+  // すべて「RegExp × string」置換に統一（TS 型エラー回避）
+  const rules: Array<[RegExp, string]> = [
+    // 仮名遣いの統一（公用文寄り）
+    [/下さい/g, "ください"],
+    [/下さ(い|ります)/g, "くださ$1"],   // ← 後方参照でサフィックス維持
+    [/頂き/g, "いただき"],
+    [/頂く/g, "いただく"],
+    [/出来る/g, "できる"],
+    [/致し/g, "いたし"],
+    [/有難うございます?/g, "ありがとうございます"],
+    [/宜しくお願いします?/g, "よろしくお願いします"],
+    [/すいません/g, "すみません"],
+    [/一旦|いったん/g, "いったん"],
+
+    // よくある誤変換
+    [/御社さま/g, "御社様"],
+    [/お手数おかけします/g, "お手数をおかけします"],
+    [/見ず?らい/g, "見づらい"],
+    [/わかりずらい|分かりずらい|分かりづらい/g, "分かりづらい"],
+    [/目安感/g, "目安"],
+
+    // 助詞の連続や重複スペース
+    [/のの/g, "の"],
+    [/はは/g, "は"],
+    [/[ 　]{2,}/g, " "],
+  ];
+
+  for (const [re, rep] of rules) {
+    t = t.replace(re, rep);
+  }
+  return t;
+}
+
+
+  // 文ごとの句読点・文末の補正
+  function fixSentences(t: string): string {
+    const lines = t.split("\n").map(s => s.trim()).filter((s, i, a) => s.length || a.length === 1);
+    const out: string[] = [];
+    for (let line of lines) {
+      if (!line) { out.push(""); continue; }
+
+      // 文中の読点が無さすぎる長文に軽く「、」を入れる（安全側で控えめ）
+      if (line.length >= 28 && !/[、，]/.test(line)) {
+        // 「が/ので/から/けど/しかし/そして/また」付近で1回だけ挿入
+        line = line.replace(/(が|ので|から|けど|しかし|そして|また)/, "、$1");
+      }
+
+      // 文末の句点補完（括弧やカギで終わっていれば付けない）
+      if (!/[。！？」）\]\}]$/.test(line)) {
+        line = line + "。";
+      }
+      out.push(line);
+    }
+    // 連続改行の圧縮
+    return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  function fixJapanese(text: string): string {
+    let t = text ?? "";
+    if (!t.trim()) return t;
+    t = normalizeSymbols(t);
+    t = removeFillers(t);
+    t = fixCommonMishears(t);
+    t = fixSentences(t);
+    return t;
+  }
+
+  // ====== ボタン：誤字・日本語修正（置換） ======
+  const doFixInPlace = () => {
     if (!value?.trim()) return;
-    const formatted = localFormat(value);
-    const summary = localSummarize(formatted, summarizeChars);
-    const next = `${formatted}\n\n【要約（約${summarizeChars}字）】\n${summary}`;
-    onChange(next);
+    const fixed = fixJapanese(value);
+    onChange(fixed); // ← 入力欄の内容を置き換える
   };
 
   return (
@@ -171,9 +181,9 @@ export default function VoiceComposeBar({
           </button>
         )}
 
-        <button className="btn" onClick={doFormatAndSummarize}>
+        <button className="btn" onClick={doFixInPlace} title="誤字・表記ゆれ・句読点を自動修正して置き換えます">
           <Wand2 className="icon" />
-          整形＋要約
+          誤字・日本語修正
         </button>
 
         <button className="btn" onClick={() => onChange("")}>
