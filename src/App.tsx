@@ -25,9 +25,12 @@ import type {
 } from './types';
 import { showApiError } from './utils/error';
 import OutboxBanner from './components/OutboxBanner';
+import VoiceComposeBar from './components/VoiceComposeBar';
+import AnswerCheck from './components/AnswerCheck';
 
 /* === TanStack Query === */
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+
 
 /* === Outbox（IndexedDB） === */
 import { push as pushOutbox } from './lib/outbox';
@@ -685,6 +688,19 @@ export default function App() {
                     onChange={(e) => setDetail({ ...detail, answer: e.target.value })}
                     placeholder="短文で明確に入力してください。"
                   />
+                 <VoiceComposeBar
+                   value={detail.answer || ""}
+                   onChange={(v) => setDetail({ ...detail, answer: v })}
+                   // formatEndpoint="/api/format" // 高品質整形を使うときだけ後で有効化
+                 />
+                 <AnswerCheck
+                   question={detail.question}
+                   answer={detail.answer || ""}
+                   onApplySuggestion={(fixed) =>
+                     setDetail({ ...detail, answer: (detail.answer || "") + "\n\n" + fixed })
+                   }
+                   // checkEndpoint="/api/check" // 高精度判定を使うときだけ後で有効化
+                 />
 
                   <UrlListEditor
                     value={detail.url || ''}
