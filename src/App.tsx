@@ -26,7 +26,6 @@ import type {
 import { showApiError } from './utils/error';
 import OutboxBanner from './components/OutboxBanner';
 import VoiceComposeBar from './components/VoiceComposeBar';
-import AnswerCheck from './components/AnswerCheck';
 
 /* === TanStack Query === */
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -691,15 +690,6 @@ export default function App() {
                  <VoiceComposeBar
                    value={detail.answer || ""}
                    onChange={(v) => setDetail({ ...detail, answer: v })}
-                   // formatEndpoint="/api/format" // 高品質整形を使うときだけ後で有効化
-                 />
-                 <AnswerCheck
-                   question={detail.question}
-                   answer={detail.answer || ""}
-                   onApplySuggestion={(fixed) =>
-                     setDetail({ ...detail, answer: (detail.answer || "") + "\n\n" + fixed })
-                   }
-                   // checkEndpoint="/api/check" // 高精度判定を使うときだけ後で有効化
                  />
 
                   <UrlListEditor
@@ -710,41 +700,20 @@ export default function App() {
                     help="1行に1URL（利用者に表示）"
                   />
 
-                  <div className="row" style={{ marginTop: 8 }}>
-                    <button className="btn btn-future" id="btnPredict" ref={btnPredictRef} onClick={runPredict}>
-                      AIで回答作成
-                    </button>
-                  </div>
-
-                  {showPred && (
-                    <div id="predSection" style={{ marginTop: 8 }}>
-                      <div className="label">AIによる予想回答候補</div>
-                      <div className="help">webからの情報のため必ず目視確認の上ご利用ください。</div>
-                      <div id="predText" className="box">
-                        {pred?.text || ''}
-                      </div>
-
-                      <div className="label" style={{ marginTop: 8 }}>
-                        参考URL
-                      </div>
-                      <div id="predUrls" className="box" style={{ minHeight: 28, maxHeight: 96, overflow: 'auto' }}>
-                        {pred?.urls?.length ? pred.urls.join('\n') : '(参考URLは見つかりませんでした)'}
-                      </div>
-
-                      <div style={{ marginTop: 8 }}>
-                        <button className="btn btn-secondary" onClick={() => copy(pred?.text || '')}>
-                          本文をコピー
-                        </button>
-                        <button className="btn btn-secondary" onClick={() => copy((pred?.urls || []).join('\n'))}>
-                          URLをコピー
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  <div style={{ marginTop: 10 }}>
+                  <div
+                    style={{
+                      marginTop: 10,
+                      position: 'sticky',
+                      bottom: 0,
+                      background: '#fff',
+                      paddingTop: 10,
+                      borderTop: '1px solid #eee',
+                      zIndex: 1
+                    }}
+                  >
                     <button
                       className="btn btn-primary"
+                      style={{ background: '#2563eb', borderColor: '#2563eb', color: '#fff' }}
                       onClick={async () => {
                         if (!detail) return;
                         const ok = await saveAnswer(detail.row, detail.answer || '', detail.url || '');
@@ -761,6 +730,7 @@ export default function App() {
                     </button>
                     <button
                       className="btn btn-primary"
+                      style={{ background: '#2563eb', borderColor: '#2563eb', color: '#fff' }}
                       onClick={async () => {
                         if (!detail) return;
                         if (!detail.answer?.trim()) {
