@@ -202,22 +202,13 @@ export async function predictAnswerForRow(row: number): Promise<PredictResult> {
   return (r as { result?: PredictResult }).result ?? (r as PredictResult);
 }
 
-/* === 追加：校正 & 要約（Gemini） ===
-   GAS 側 doPost の action: 'formatText' に対応
-   返却: { ok: true, fixed: string, summary: string, traceId?: string }
-*/
-export async function formatText(
-  text: string,
-  summaryChars = 100
-): Promise<{ ok: boolean; fixed: string; summary: string; traceId?: string }> {
-  const r = await postJSON('formatText', { text, summaryChars });
-  return r as { ok: boolean; fixed: string; summary: string; traceId?: string };
-}
-
-export async function summarizeText(text: string): Promise<{ corrected: string; summary: string }> {
-  const r = await postJSON<{ ok?: boolean; result?: { corrected: string; summary: string } }>(
-    'summarizeText',
-    { text }
-  );
-  return (r as any)?.result ?? { corrected: '', summary: '' };
+// 末尾あたりに追記
+export async function formatText(text: string, max: number = 100): Promise<{ ok: boolean; fixed: string; summary: string }> {
+  const r = await postJSON('formatText', { text, max });
+  // GASが { ok, fixed, summary } を返す想定
+  if (typeof r === 'object' && r !== null && (r as any).fixed !== undefined) {
+    return r as any;
+  }
+  // 念のためのフォールバック
+  return { ok: false, fixed: String((r as any)?.fixed || ''), summary: String((r as any)?.summary || '') };
 }
