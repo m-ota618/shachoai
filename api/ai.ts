@@ -17,25 +17,20 @@ function cors(req: VercelRequest, res: VercelResponse) {
 
 function normalizeModel(m?: string) {
   const raw = (m || '').trim();
-  if (!raw) return 'gemini-1.5-flash'; // まずは安定モデルを既定
-  return raw.replace(/^models\//i, ''); // 誤って "models/..." を入れても動くよう補正
+  if (!raw) return 'gemini-1.5-flash';
+  return raw.replace(/^models\//i, '');
 }
 
 const MODEL = normalizeModel(process.env.GEMINI_MODEL);
 const API_KEY = process.env.GEMINI_API_KEY;
 
 function extractText(data: any): string {
-  // A) output_text（最近のAPIがまとめて返すことがある）
+  // A) まず最近の形
   const a = String(data?.candidates?.[0]?.output_text || '').trim();
   if (a) return a;
-
-  // B) parts[].text
+  // B) 以前の形
   const parts = data?.candidates?.[0]?.content?.parts || [];
-  const b = parts
-    .map((p: any) => (p?.text ? String(p.text) : ''))
-    .filter(Boolean)
-    .join('\n')
-    .trim();
+  const b = parts.map((p: any) => (p?.text ? String(p.text) : '')).filter(Boolean).join('\n').trim();
   return b;
 }
 
@@ -68,7 +63,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         maxOutputTokens: 256,
         response_mime_type: 'text/plain',
       },
-      // safetySettings は明示しない（400の原因になりやすい）
+      // safetySettings は指定しない（400の原因になりやすい）
     };
 
     const r = await fetch(url, {
@@ -88,7 +83,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const data = ct.includes('json') ? JSON.parse(raw) : {};
     const block = data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason;
     if (block && String(block).toUpperCase().includes('SAFETY')) {
-      // ブロックは 400 + 理由 を返す（UIで区別できるように）
       return res.status(400).json({ ok: false, error: 'blocked_safety', reason: block });
     }
 
