@@ -687,7 +687,7 @@ export default function App() {
                     onChange={(e) => setDetail({ ...detail, answer: e.target.value })}
                     placeholder="短文で明確に入力してください。"
                   />
-                 // App.tsx（detailビューの VoiceComposeBar 呼び出し部分）
+      
                   <VoiceComposeBar
                     value={detail.answer || ""}
                     onChange={(v) => setDetail({ ...detail, answer: v })}
