@@ -45,6 +45,7 @@ export default function VoiceComposeBar({
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
         if (r.isFinal) {
+          // 停止まで入力欄には反映しない（バッファに貯める）
           bufferRef.current += r[0].transcript;
         } else {
           it += r[0].transcript;
@@ -68,8 +69,8 @@ export default function VoiceComposeBar({
     const add = bufferRef.current.trim();
     if (add) {
       const base = (value || "").trim();
-      const glue = base && !/[。\n]$/.test(base) ? "。" : "";
-      onChange((base + glue + (glue ? "" : "") + (base ? "\n" : "") + add).trim());
+      const needsNewline = base.length > 0 && !/\n$/.test(base);
+      onChange((base + (needsNewline ? "\n" : "") + add).trim());
     }
     bufferRef.current = "";
   };
@@ -151,9 +152,13 @@ export default function VoiceComposeBar({
     try {
       // ① GAS(Gemini)で校正＋100字要約
       const r = await formatText(value, 100);
-      if (r && r.ok && r.fixed) {
-        onChange(r.fixed);
-        setSummary(r.summary || "");
+      if (r && (r as any).ok && (r as any).fixed) {
+        onChange((r as any).fixed);
+        setSummary((r as any).summary || "");
+      } else if ((r as any)?.corrected || (r as any)?.summary) {
+        // summarizeText 形の返り値でも受けられる保険
+        onChange((r as any).corrected || value);
+        setSummary((r as any).summary || summarizeLocal((r as any).corrected || value, 100));
       } else {
         // ② フォールバック：ローカル
         const fixed = fixJapanese(value);
@@ -165,7 +170,7 @@ export default function VoiceComposeBar({
       const fixed = fixJapanese(value);
       onChange(fixed);
       setSummary(summarizeLocal(fixed, 100));
-      alert("オンライン校正に失敗したため、ローカル整形を適用しました。");
+      // 通知は控えめに（アラートは出さない）
     } finally {
       setBusy(false);
     }
@@ -184,12 +189,21 @@ export default function VoiceComposeBar({
           </button>
         )}
 
-        <button className="btn" onClick={handleFormat} disabled={busy || !value?.trim()} title="誤字・句読点・日本語を校正し、100字要約を作成">
+        <button
+          className="btn"
+          onClick={handleFormat}
+          disabled={busy || !value?.trim()}
+          title="誤字・句読点・日本語を校正し、100字要約を作成"
+        >
           {busy ? <Loader2 className="icon spin" /> : <Wand2 className="icon" />}
           要約＆整形
         </button>
 
-        <button className="btn" onClick={() => { onChange(""); setSummary(""); }} disabled={busy}>
+        <button
+          className="btn"
+          onClick={() => { onChange(""); setSummary(""); }}
+          disabled={busy}
+        >
           <Eraser className="icon" />
           クリア
         </button>

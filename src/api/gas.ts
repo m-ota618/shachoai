@@ -213,3 +213,11 @@ export async function formatText(
   const r = await postJSON('formatText', { text, summaryChars });
   return r as { ok: boolean; fixed: string; summary: string; traceId?: string };
 }
+
+export async function summarizeText(text: string): Promise<{ corrected: string; summary: string }> {
+  const r = await postJSON<{ ok?: boolean; result?: { corrected: string; summary: string } }>(
+    'summarizeText',
+    { text }
+  );
+  return (r as any)?.result ?? { corrected: '', summary: '' };
+}
