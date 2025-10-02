@@ -1,8 +1,5 @@
-// api/ai.ts  — Vercel Serverless Function (TypeScript)
+// /api/ai.ts — Vercel Serverless Function (TypeScript)
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-
-const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-const API_KEY = process.env.GEMINI_API_KEY; // ← Vercel の環境変数に設定する
 
 function cors(req: VercelRequest, res: VercelResponse) {
   const allow = (process.env.ALLOW_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -18,6 +15,30 @@ function cors(req: VercelRequest, res: VercelResponse) {
   }
 }
 
+function normalizeModel(m?: string) {
+  const raw = (m || '').trim();
+  if (!raw) return 'gemini-1.5-flash'; // まずは安定モデルを既定
+  return raw.replace(/^models\//i, ''); // 誤って "models/..." を入れても動くよう補正
+}
+
+const MODEL = normalizeModel(process.env.GEMINI_MODEL);
+const API_KEY = process.env.GEMINI_API_KEY;
+
+function extractText(data: any): string {
+  // A) output_text（最近のAPIがまとめて返すことがある）
+  const a = String(data?.candidates?.[0]?.output_text || '').trim();
+  if (a) return a;
+
+  // B) parts[].text
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  const b = parts
+    .map((p: any) => (p?.text ? String(p.text) : ''))
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+  return b;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   cors(req, res);
   if (req.method === 'OPTIONS') return res.status(204).end();
@@ -28,11 +49,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
     const text = String(body?.text || '').trim();
-    const maxChars = Math.max(40, Math.min(300, Number(body?.maxChars || 100)));
-
+    const maxChars = Math.max(40, Math.min(300, Number(body?.maxChars || body?.targetChars || 100)));
     if (!text) return res.status(400).json({ ok: false, error: 'missing_text' });
 
-    // Gemini へのリクエスト
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(MODEL)}:generateContent`;
     const prompt = [
       `次の日本語テキストを ${maxChars} 文字以内で一段落に要約してください。`,
@@ -49,37 +68,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         maxOutputTokens: 256,
         response_mime_type: 'text/plain',
       },
+      // safetySettings は明示しない（400の原因になりやすい）
     };
 
     const r = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': API_KEY,
-      },
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': API_KEY as string },
       body: JSON.stringify(payload),
     });
 
     const ct = r.headers.get('content-type') || '';
     const raw = await r.text();
+
     if (!r.ok) {
-      console.error('gemini_error', r.status, raw.slice(0, 300));
+      console.error('gemini_http_error', r.status, raw.slice(0, 400));
       return res.status(502).json({ ok: false, error: 'gemini_http_error', status: r.status });
     }
 
     const data = ct.includes('json') ? JSON.parse(raw) : {};
-    const parts = data?.candidates?.[0]?.content?.parts || [];
-    const summary: string =
-      parts.map((p: any) => (p?.text ? String(p.text) : ''))
-           .filter(Boolean)
-           .join('\n')
-           .trim();
+    const block = data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason;
+    if (block && String(block).toUpperCase().includes('SAFETY')) {
+      // ブロックは 400 + 理由 を返す（UIで区別できるように）
+      return res.status(400).json({ ok: false, error: 'blocked_safety', reason: block });
+    }
 
-    if (!summary) return res.status(502).json({ ok: false, error: 'empty_summary' });
+    const summary = extractText(data);
+    if (!summary) {
+      console.error('empty_summary_payload', JSON.stringify(data).slice(0, 500));
+      return res.status(502).json({ ok: false, error: 'empty_summary' });
+    }
 
-    // 文字数ガード（超えたらカット）
     const trimmed = summary.length > maxChars ? summary.slice(0, maxChars - 1) + '…' : summary;
-
     return res.status(200).json({ ok: true, summary: trimmed });
   } catch (e: any) {
     console.error('ai_handler_error', e?.message || e);
