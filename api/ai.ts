@@ -49,10 +49,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(MODEL)}:generateContent`;
     const prompt = [
-      `次の日本語テキストを ${maxChars} 文字以内で一段落に要約してください。`,
-      `数値・固有名詞はできるだけ保持し、断定を避け、文は自然な日本語で。`,
-      `出力は要約文のみ。前後に余分な語句やラベルは付けない。`,
-      `---`,
+      `以下の日本語の原文を、話者の「話し方（口調・文体［敬体/常体］・一人称・語尾・語彙・絵文字/記号の使い方）」を保ったまま要約してください。`,
+      `方針: 冗長表現と重複のみを削り、論旨の順序と因果関係をできるだけ維持します。重要な数値・固有名詞は保持します。`,
+      `スタイル: 原文の断定/婉曲の度合いと語尾ニュアンスを維持し、相づち・言いよどみは意味を損ねない範囲で最小化します。`,
+      `制約: ${maxChars} 文字以内、1段落、改行/箇条書き/見出し/ラベルなし。出力は本文のみ。`,
+      `----`,
       text
     ].join('\n');
 
