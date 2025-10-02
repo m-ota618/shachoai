@@ -687,10 +687,24 @@ export default function App() {
                     onChange={(e) => setDetail({ ...detail, answer: e.target.value })}
                     placeholder="短文で明確に入力してください。"
                   />
-                 <VoiceComposeBar
-                   value={detail.answer || ""}
-                   onChange={(v) => setDetail({ ...detail, answer: v })}
-                 />
+                 // App.tsx（detailビューの VoiceComposeBar 呼び出し部分）
+                  <VoiceComposeBar
+                    value={detail.answer || ""}
+                    onChange={(v) => setDetail({ ...detail, answer: v })}
+                    onCommit={async (text) => {
+                      try {
+                        await saveAnswer(detail.row, text, detail.url || "");
+                        // キャッシュも更新しておく
+                        queryClient.setQueryData(['detail', detail.row], { ...detail, answer: text });
+                        // drafts一覧があれば軽く更新
+                        queryClient.invalidateQueries({ queryKey: ['drafts'] });
+                        // ここでトースト等を出してもOK（例：console.log('自動保存')）
+                      } catch (e) {
+                        console.warn('自動保存に失敗:', e);
+                        // 失敗しても入力欄は保持されるので、必要ならアラート表示
+                      }
+                    }}
+                  />
 
                   <UrlListEditor
                     value={detail.url || ''}

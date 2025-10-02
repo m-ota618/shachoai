@@ -1,32 +1,27 @@
 // src/components/VoiceComposeBar.tsx
 import React, { useRef, useState } from "react";
-import { Mic, Square, Wand2, Eraser, Loader2, Copy, Sparkles } from "lucide-react";
-import { useWebLLM } from "../lib/useWebLLM";
-import { formatWithWebLLM, formatLocal } from "../lib/formatWithWebLLM";
+import { Mic, Square, Wand2, Eraser, Loader2, Copy } from "lucide-react";
+import { summarize } from "../api/ai";
 
-/**
- * 音声入力 + 文章「要約＆整形」（WebLLM/サーバ不要）
- * - 録音中は入力欄を更新しない（停止で一括反映）
- * - 「要約＆整形」: まず WebLLM で誤字・句読点・日本語を校正＆100字要約
- *   フォールバック: ローカル簡易整形 + 100字要約
- * - 整形結果は入力欄を **置換**（追記しない）
- */
-export default function VoiceComposeBar({
-  value,
-  onChange,
-}: {
+type Props = {
   value: string;
   onChange: (v: string) => void;
-}) {
+  /** 音声停止で本文が更新された直後に呼ばれる（任意） */
+  onCommit?: (text: string) => void | Promise<void>;
+};
+
+/**
+ * 音声入力 + 要約（Vercel /api/ai → Gemini）
+ * - 録音中は入力欄を更新しない（停止で一括反映）
+ * - 「要約」ボタンは約100字の要約を取得し、下部に表示（本文は書き換えない）
+ */
+export default function VoiceComposeBar({ value, onChange, onCommit }: Props) {
   const [recState, setRecState] = useState<"idle" | "recording">("idle");
   const [interim, setInterim] = useState("");
   const [busy, setBusy] = useState(false);
   const [summary, setSummary] = useState("");
   const bufferRef = useRef<string>("");
   const recRef = useRef<any>(null);
-
-  // WebLLM 準備
-  const { ready, loadingMsg, error, run, webgpuOK } = useWebLLM();
 
   /* ========= 音声入力 ========= */
   const start = () => {
@@ -49,7 +44,7 @@ export default function VoiceComposeBar({
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
         if (r.isFinal) {
-          bufferRef.current += r[0].transcript; // ← 停止まで入力欄には入れない
+          bufferRef.current += r[0].transcript; // 停止まで入力欄には反映しない
         } else {
           it += r[0].transcript;
         }
@@ -64,43 +59,37 @@ export default function VoiceComposeBar({
     setRecState("recording");
   };
 
-  const stop = () => {
+  const stop = async () => {
     const rec = recRef.current;
     if (rec) rec.stop();
     setRecState("idle");
     setInterim("");
     const add = bufferRef.current.trim();
-    if (add) {
-      // 入力欄末尾が句点や改行で終わっていなければ句点や改行で接続
-      const base = (value || "").trim();
-      const needGlue = base && !/[。\n]$/.test(base);
-      const next = [base, needGlue ? "。" : "", base ? "\n" : "", add].join("").trim();
-      onChange(next);
-    }
     bufferRef.current = "";
+
+    if (add) {
+      const base = (value || "").trim();
+      // 既存本文の末尾が句点/改行でなければ句点を補い、改行で区切って追記
+      const needsPeriod = base && !/[。．.!！?？\n]$/.test(base);
+      const next = (base ? base + (needsPeriod ? "。" : "") + "\n" : "") + add;
+      onChange(next);
+      // ここで自動保存などをしたい場合に発火
+      if (onCommit) {
+        try { await onCommit(next); } catch (e) { console.warn("onCommit failed:", e); }
+      }
+    }
   };
 
-  /* ========= 要約＆整形（WebLLM→fallback） ========= */
-  const handleFormat = async () => {
+  /* ========= 要約（/api/ai → Gemini） ========= */
+  const handleSummarize = async () => {
     if (!value?.trim() || busy) return;
     setBusy(true);
     try {
-      if (ready) {
-        const r = await formatWithWebLLM(run, value, 100);
-        if (r.fixed?.trim()) onChange(r.fixed.trim());
-        setSummary(r.summary || "");
-      } else {
-        // 未準備またはWebGPU不可→ローカル整形
-        const r = formatLocal(value, 100);
-        onChange(r.fixed);
-        setSummary(r.summary);
-      }
+      const s = await summarize(value, 100); // 約100字
+      setSummary(s);
     } catch (e) {
-      console.warn("WebLLM format error:", e);
-      const r = formatLocal(value, 100);
-      onChange(r.fixed);
-      setSummary(r.summary);
-      // ここでアラートは出さず静かにフォールバック（UX重視）
+      console.warn("summarize failed:", e);
+      alert("要約の作成に失敗しました。時間をおいて再試行してください。");
     } finally {
       setBusy(false);
     }
@@ -121,35 +110,23 @@ export default function VoiceComposeBar({
 
         <button
           className="btn"
-          onClick={handleFormat}
+          onClick={handleSummarize}
           disabled={busy || !value?.trim()}
-          title="誤字・句読点・日本語を校正し、100字要約を作成（WebLLM/サーバ不要）"
+          title="Geminiで約100字の要約を作成します"
         >
           {busy ? <Loader2 className="icon spin" /> : <Wand2 className="icon" />}
-          要約＆整形
+          要約
         </button>
 
         <button
           className="btn"
-          onClick={() => { onChange(""); setSummary(""); }}
+          onClick={() => setSummary("")}
           disabled={busy}
         >
           <Eraser className="icon" />
-          クリア
+          要約クリア
         </button>
       </div>
-
-      {/* モデルロード状況 */}
-      {!ready && (
-        <div className="vcb-hint">
-          <Sparkles className="icon" />
-          {error
-            ? `LLM初期化エラー: ${error}`
-            : (webgpuOK
-                ? loadingMsg
-                : "このブラウザはWebGPUに未対応です。最新のChrome/Edgeをご利用ください。")}
-        </div>
-      )}
 
       {/* 録音中の一時表示（入力欄には反映しない） */}
       {interim && recState === "recording" && (
@@ -195,7 +172,6 @@ export default function VoiceComposeBar({
         .vcb-summary-body { font-size:13px; line-height:1.6; white-space:pre-wrap; }
         .chip { display:inline-flex; align-items:center; gap:6px; border:1px solid #ddd; padding:4px 8px; border-radius:999px; background:#fff; cursor:pointer; font-size:12px; }
         .chip:hover { background:#f5f5f5; }
-        .vcb-hint { margin-top:6px; font-size:12px; color:#666; display:flex; align-items:center; gap:6px; }
       `}</style>
     </div>
   );
