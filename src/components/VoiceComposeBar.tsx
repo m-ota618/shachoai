@@ -1,12 +1,14 @@
+// src/components/VoiceComposeBar.tsx
 import React, { useRef, useState } from "react";
-import { Mic, Square, Wand2, Eraser } from "lucide-react";
+import { Mic, Square, Wand2, Eraser, Loader2, Copy } from "lucide-react";
+import { formatText } from "../api/gas";
 
 /**
- * 音声入力 + 文章修正（ゼロ課金・ローカルルールベース）
+ * 音声入力 + 文章「要約＆整形」
  * - 録音中は入力欄を更新しない（停止で一括反映）
- * - 「誤字・日本語修正」ボタン:
- *    口癖/冗長の除去、表記ゆれの統一、よくある誤変換の修正、
- *    句読点/文末補正、スペース/改行整理 などを行い、入力欄のテキストを **置換** します
+ * - 「要約＆整形」: まず GAS(Gemini)で誤字・句読点・日本語を校正＆100字要約
+ *   フォールバック: ローカル簡易整形 + 100字要約
+ * - 整形結果は入力欄を **置換**（追記しない）
  */
 export default function VoiceComposeBar({
   value,
@@ -17,10 +19,12 @@ export default function VoiceComposeBar({
 }) {
   const [recState, setRecState] = useState<"idle" | "recording">("idle");
   const [interim, setInterim] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [summary, setSummary] = useState("");
   const bufferRef = useRef<string>("");
   const recRef = useRef<any>(null);
 
-  // ====== 音声入力 ======
+  /* ========= 音声入力 ========= */
   const start = () => {
     // @ts-ignore
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -41,7 +45,7 @@ export default function VoiceComposeBar({
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
         if (r.isFinal) {
-          bufferRef.current += r[0].transcript; // ← 停止まで入力欄には入れない
+          bufferRef.current += r[0].transcript;
         } else {
           it += r[0].transcript;
         }
@@ -63,94 +67,68 @@ export default function VoiceComposeBar({
     setInterim("");
     const add = bufferRef.current.trim();
     if (add) {
-      onChange((value || "") + add); // 録音分をここで初めて追記
+      const base = (value || "").trim();
+      const glue = base && !/[。\n]$/.test(base) ? "。" : "";
+      onChange((base + glue + (glue ? "" : "") + (base ? "\n" : "") + add).trim());
     }
     bufferRef.current = "";
   };
 
-  // ====== 修正ルール群 ======
+  /* ========= ローカル整形（フォールバック） ========= */
   function normalizeSymbols(t: string): string {
     return t
       .replace(/\r\n?/g, "\n")
-      .replace(/\u3000/g, " ") // 全角スペース→半角
+      .replace(/\u3000/g, " ")
       .replace(/，/g, "、")
       .replace(/．/g, "。")
       .replace(/!\s*/g, "！")
       .replace(/\?\s*/g, "？");
   }
-
-  // よくある口癖・冗長語の除去（文頭/区切り語の直後のみ）
   function removeFillers(t: string): string {
-    const fillers = [
-      "えー","えっと","その","あの","まあ","なんか","みたいな","とりあえず","やっぱり","ていうか","なんというか",
-    ];
-    fillers.forEach(f => {
+    const fillers = ["えー", "えっと", "その", "あの", "まあ", "なんか", "みたいな", "とりあえず", "やっぱり", "ていうか", "なんというか"];
+    fillers.forEach((f) => {
       const re = new RegExp(`(^|[\\s、。])${f}(?:[ー〜っ\\s]*)`, "g");
       t = t.replace(re, "$1");
     });
     return t;
   }
-
-  // 音声誤変換・表記ゆれの補正（代表例）
-  // 音声誤変換・表記ゆれの補正（代表例）
-function fixCommonMishears(t: string): string {
-  // すべて「RegExp × string」置換に統一（TS 型エラー回避）
-  const rules: Array<[RegExp, string]> = [
-    // 仮名遣いの統一（公用文寄り）
-    [/下さい/g, "ください"],
-    [/下さ(い|ります)/g, "くださ$1"],   // ← 後方参照でサフィックス維持
-    [/頂き/g, "いただき"],
-    [/頂く/g, "いただく"],
-    [/出来る/g, "できる"],
-    [/致し/g, "いたし"],
-    [/有難うございます?/g, "ありがとうございます"],
-    [/宜しくお願いします?/g, "よろしくお願いします"],
-    [/すいません/g, "すみません"],
-    [/一旦|いったん/g, "いったん"],
-
-    // よくある誤変換
-    [/御社さま/g, "御社様"],
-    [/お手数おかけします/g, "お手数をおかけします"],
-    [/見ず?らい/g, "見づらい"],
-    [/わかりずらい|分かりずらい|分かりづらい/g, "分かりづらい"],
-    [/目安感/g, "目安"],
-
-    // 助詞の連続や重複スペース
-    [/のの/g, "の"],
-    [/はは/g, "は"],
-    [/[ 　]{2,}/g, " "],
-  ];
-
-  for (const [re, rep] of rules) {
-    t = t.replace(re, rep);
+  function fixCommonMishears(t: string): string {
+    const rules: Array<[RegExp, string]> = [
+      [/下さい/g, "ください"],
+      [/下さ(い|ります)/g, "くださ$1"],
+      [/頂き/g, "いただき"],
+      [/頂く/g, "いただく"],
+      [/出来る/g, "できる"],
+      [/致し/g, "いたし"],
+      [/有難うございます?/g, "ありがとうございます"],
+      [/宜しくお願いします?/g, "よろしくお願いします"],
+      [/すいません/g, "すみません"],
+      [/一旦|いったん/g, "いったん"],
+      [/御社さま/g, "御社様"],
+      [/お手数おかけします/g, "お手数をおかけします"],
+      [/見ず?らい/g, "見づらい"],
+      [/わかりずらい|分かりずらい|分かりづらい/g, "分かりづらい"],
+      [/目安感/g, "目安"],
+      [/のの/g, "の"],
+      [/はは/g, "は"],
+      [/[ 　]{2,}/g, " "],
+    ];
+    for (const [re, rep] of rules) t = t.replace(re, rep);
+    return t;
   }
-  return t;
-}
-
-
-  // 文ごとの句読点・文末の補正
   function fixSentences(t: string): string {
-    const lines = t.split("\n").map(s => s.trim()).filter((s, i, a) => s.length || a.length === 1);
+    const lines = t.split("\n").map((s) => s.trim()).filter((s, i, a) => s.length || a.length === 1);
     const out: string[] = [];
     for (let line of lines) {
       if (!line) { out.push(""); continue; }
-
-      // 文中の読点が無さすぎる長文に軽く「、」を入れる（安全側で控えめ）
       if (line.length >= 28 && !/[、，]/.test(line)) {
-        // 「が/ので/から/けど/しかし/そして/また」付近で1回だけ挿入
         line = line.replace(/(が|ので|から|けど|しかし|そして|また)/, "、$1");
       }
-
-      // 文末の句点補完（括弧やカギで終わっていれば付けない）
-      if (!/[。！？」）\]\}]$/.test(line)) {
-        line = line + "。";
-      }
+      if (!/[。！？」）\]\}]$/.test(line)) line = line + "。";
       out.push(line);
     }
-    // 連続改行の圧縮
     return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
   }
-
   function fixJapanese(text: string): string {
     let t = text ?? "";
     if (!t.trim()) return t;
@@ -160,19 +138,44 @@ function fixCommonMishears(t: string): string {
     t = fixSentences(t);
     return t;
   }
+  function summarizeLocal(t: string, n = 100): string {
+    const s = (t || "").replace(/\s+/g, " ").replace(/[「」『』【】\[\]\(\)]/g, "").trim();
+    if (s.length <= n) return s;
+    return s.slice(0, n - 1) + "…";
+  }
 
-  // ====== ボタン：誤字・日本語修正（置換） ======
-  const doFixInPlace = () => {
-    if (!value?.trim()) return;
-    const fixed = fixJapanese(value);
-    onChange(fixed); // ← 入力欄の内容を置き換える
+  /* ========= 要約＆整形（Gemini→fallback） ========= */
+  const handleFormat = async () => {
+    if (!value?.trim() || busy) return;
+    setBusy(true);
+    try {
+      // ① GAS(Gemini)で校正＋100字要約
+      const r = await formatText(value, 100);
+      if (r && r.ok && r.fixed) {
+        onChange(r.fixed);
+        setSummary(r.summary || "");
+      } else {
+        // ② フォールバック：ローカル
+        const fixed = fixJapanese(value);
+        onChange(fixed);
+        setSummary(summarizeLocal(fixed, 100));
+      }
+    } catch (e) {
+      console.warn("formatText error:", e);
+      const fixed = fixJapanese(value);
+      onChange(fixed);
+      setSummary(summarizeLocal(fixed, 100));
+      alert("オンライン校正に失敗したため、ローカル整形を適用しました。");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
     <div className="vcb">
       <div className="vcb-row">
         {recState === "idle" ? (
-          <button className="btn btn-future" onClick={start}>
+          <button className="btn btn-future" onClick={start} disabled={busy}>
             <Mic className="icon" />音声入力
           </button>
         ) : (
@@ -181,12 +184,12 @@ function fixCommonMishears(t: string): string {
           </button>
         )}
 
-        <button className="btn" onClick={doFixInPlace} title="誤字・表記ゆれ・句読点を自動修正して置き換えます">
-          <Wand2 className="icon" />
-          誤字・日本語修正
+        <button className="btn" onClick={handleFormat} disabled={busy || !value?.trim()} title="誤字・句読点・日本語を校正し、100字要約を作成">
+          {busy ? <Loader2 className="icon spin" /> : <Wand2 className="icon" />}
+          要約＆整形
         </button>
 
-        <button className="btn" onClick={() => onChange("")}>
+        <button className="btn" onClick={() => { onChange(""); setSummary(""); }} disabled={busy}>
           <Eraser className="icon" />
           クリア
         </button>
@@ -199,15 +202,43 @@ function fixCommonMishears(t: string): string {
         </div>
       )}
 
+      {/* 要約プレビュー */}
+      {summary && (
+        <div className="vcb-summary">
+          <div className="vcb-summary-head">
+            <span>要約（約100字）</span>
+            <button
+              className="chip"
+              onClick={async () => {
+                try { await navigator.clipboard.writeText(summary); alert("要約をコピーしました"); }
+                catch { alert("コピーに失敗しました"); }
+              }}
+              aria-label="要約をコピー"
+            >
+              <Copy className="icon" /> コピー
+            </button>
+          </div>
+          <div className="vcb-summary-body">{summary}</div>
+        </div>
+      )}
+
       <style>{`
         .vcb { margin-top: 8px; }
         .vcb-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
         .btn { display:inline-flex; align-items:center; gap:6px; border:1px solid #ddd; padding:6px 10px; border-radius:8px; background:#fff; cursor:pointer; }
         .btn:hover { background:#f8f8f8; }
+        .btn[disabled] { opacity:.6; cursor:not-allowed; }
         .btn-danger { background:#ffecec; border-color:#ffbdbd; }
         .btn-future { background:#eef7ff; border-color:#bcdcff; }
         .icon { width:16px; height:16px; }
+        .spin { animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
         .vcb-interim { font-size:12px; color:#666; padding:4px 0; }
+        .vcb-summary { margin-top:8px; border:1px solid #eee; border-radius:8px; padding:8px; background:#fafafa; }
+        .vcb-summary-head { display:flex; justify-content:space-between; align-items:center; font-size:12px; color:#555; margin-bottom:6px; }
+        .vcb-summary-body { font-size:13px; line-height:1.6; white-space:pre-wrap; }
+        .chip { display:inline-flex; align-items:center; gap:6px; border:1px solid #ddd; padding:4px 8px; border-radius:999px; background:#fff; cursor:pointer; font-size:12px; }
+        .chip:hover { background:#f5f5f5; }
       `}</style>
     </div>
   );

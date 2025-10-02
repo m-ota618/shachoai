@@ -201,3 +201,15 @@ export async function predictAnswerForRow(row: number): Promise<PredictResult> {
   const r = await postJSON<PredictResult>('predictAnswerForRow', { row });
   return (r as { result?: PredictResult }).result ?? (r as PredictResult);
 }
+
+/* === 追加：校正 & 要約（Gemini） ===
+   GAS 側 doPost の action: 'formatText' に対応
+   返却: { ok: true, fixed: string, summary: string, traceId?: string }
+*/
+export async function formatText(
+  text: string,
+  summaryChars = 100
+): Promise<{ ok: boolean; fixed: string; summary: string; traceId?: string }> {
+  const r = await postJSON('formatText', { text, summaryChars });
+  return r as { ok: boolean; fixed: string; summary: string; traceId?: string };
+}
