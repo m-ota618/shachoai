@@ -60,9 +60,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       contents: [{ role: 'user', parts: [{ text: prompt }]}],
       generationConfig: {
         temperature: 0.2,
-        maxOutputTokens: 256,
+        maxOutputTokens: Number(process.env.SUMMARY_MAX_TOKENS ?? 1024),
         response_mime_type: 'text/plain',
-      },
+        },
       // safetySettings は指定しない（400の原因になりやすい）
     };
 
@@ -87,9 +87,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const summary = extractText(data);
+    const finish = data?.candidates?.[0]?.finishReason;
     if (!summary) {
-      console.error('empty_summary_payload', JSON.stringify(data).slice(0, 500));
-      return res.status(502).json({ ok: false, error: 'empty_summary' });
+    return res.status(400).json({
+        ok: false,
+        error: 'empty_model_output',
+        reason: String(finish || data?.promptFeedback?.blockReason || 'UNKNOWN'),
+        usage: data?.usageMetadata,
+    });
     }
 
     const trimmed = summary.length > maxChars ? summary.slice(0, maxChars - 1) + '…' : summary;
