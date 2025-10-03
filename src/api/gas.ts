@@ -120,12 +120,15 @@ async function postJSON<T = unknown>(
     throw new ApiError(msg, { code, status: res.status, traceId: respTraceId, raw: text });
   }
 
-  try {
-    if (contentType.toLowerCase().includes('application/json')) {
-      return JSON.parse(text) as T;
-    }
-  } catch {/* noop */}
-  return (text as unknown) as T;
+    try {
+      // プロキシの Content-Type がズレていても中身が JSON ならパースする
+      const ct = contentType.toLowerCase();
+      const looksJson = /^[\[{]/.test(text.trim());
+      if (ct.includes('application/json') || looksJson) {
+        return JSON.parse(text) as T;
+      }
+    } catch {/* 失敗したらテキストのまま返す */}
+    return (text as unknown) as T;
 }
 
 function arr<T>(r: unknown): T[] {
@@ -190,7 +193,14 @@ export async function saveUpdateRow(row: number, payload: { answer: string; url:
 }
 export async function syncToMiibo(): Promise<boolean> {
   const r = await postJSON('syncToMiibo');
-  return r === true || (r as { ok?: boolean })?.ok === true;
+  if (typeof r === 'boolean') return r;
+  if (typeof r === 'string') {
+    const s = r.trim();
+    if (s === 'true') return true;
+    try { const j = JSON.parse(s); return j?.ok === true || j?.success === true; } catch {}
+    return false;
+  }
+  return (r as any)?.ok === true || (r as any)?.success === true;
 }
 export async function bulkCompleteDrafts(opt?: { dryRun?: boolean; limit?: number }): Promise<BulkDryResult | BulkRunResult> {
   const r = await postJSON('bulkCompleteDrafts', opt || {});
