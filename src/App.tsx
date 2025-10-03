@@ -10,6 +10,7 @@ import {
   getAllTopicOptionsPinnedFirst,
   getUpdateData,
   saveUpdateRow,
+  deleteQaRow ,
   syncToMiibo,
   bulkCompleteDrafts,
   predictAnswerForRow
@@ -26,6 +27,7 @@ import type {
 import { showApiError } from './utils/error';
 import OutboxBanner from './components/OutboxBanner';
 import VoiceComposeBar from './components/VoiceComposeBar';
+
 
 /* === TanStack Query === */
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -299,6 +301,7 @@ export default function App() {
   const [updTopic, setUpdTopic] = useState('');
   const [updList, setUpdList] = useState<UpdateItem[] | null>(null);
   const [updCur, setUpdCur] = useState<UpdateItem | null>(null);
+  const [delBusy, setDelBusy] = useState(false);
 
   const openUpdateDetail = (it: UpdateItem) => {
     setUpdCur(it);
@@ -308,6 +311,32 @@ export default function App() {
     setUpdCur(null);
     if (reload) await loadUpdateList();
   };
+  const handleDeleteUpdate = async () => {
+    if (!updCur) return;
+    const ok = confirm('このQ&Aを削除します。よろしいですか？\n（chatbotのナレッジからも削除されます）');
+    if (!ok) return;
+
+    setDelBusy(true);
+    try {
+      const res = await deleteQaRow(updCur.row); // /api/gas 統一版
+      const miiboMsg = res?.miibo?.deleted ? '（miiboへ反映済）' : '';
+      alert(`削除しました。${miiboMsg}`);
+
+      // 一覧へ戻って再取得
+      await closeUpdateDetail(true);
+
+      // 関連キャッシュの無効化/掃除（念のため）
+      queryClient.invalidateQueries({ queryKey: ['unans'] });
+      queryClient.invalidateQueries({ queryKey: ['drafts'] });
+      queryClient.invalidateQueries({ queryKey: ['history'] });
+      queryClient.removeQueries({ queryKey: ['detail', updCur.row], exact: true });
+    } catch (e) {
+      showApiError(e, '削除に失敗しました');
+    } finally {
+      setDelBusy(false);
+    }
+  };
+
   const initUpdateTab = async () => {
     setUpdList(null);
     if (!topicOptions.length) {
@@ -966,8 +995,10 @@ export default function App() {
                     />
 
                     <div style={{ marginTop: 10 }}>
+                      {/* 保存 */}
                       <button
                         className="btn btn-primary"
+                        disabled={delBusy}
                         onClick={async () => {
                           if (!updCur) return;
                           if (!updCur.answer?.trim()) {
@@ -997,10 +1028,26 @@ export default function App() {
                       >
                         保存
                       </button>
-                      <button className="btn btn-secondary" onClick={() => closeUpdateDetail(false)}>
+
+                      {/* 削除（赤） */}
+                      <button
+                        className="btn btn-danger"
+                        disabled={delBusy}
+                        onClick={handleDeleteUpdate}
+                      >
+                        {delBusy ? '削除中…' : '削除'}
+                      </button>
+
+                      {/* 戻る */}
+                      <button
+                        className="btn btn-secondary"
+                        disabled={delBusy}
+                        onClick={() => closeUpdateDetail(false)}
+                      >
                         戻る
                       </button>
                     </div>
+
                   </div>
                 </div>
               )}

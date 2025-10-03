@@ -156,14 +156,15 @@ export async function saveAnswer(row: number, answer: string, url: string): Prom
 
 /* === 変更: 第2引数 opt を追加し、payload にマージ === */
 export async function completeFromWeb(row: number, opt: SendOptions = {}): Promise<boolean> {
-  const r = await postJSON('completeFromWeb', { row, ...opt });
+  const r = await postJSON('completeFromWeb', { row, ...opt, confirm: true });
   return r === true || (r as { ok?: boolean })?.ok === true;
 }
 
 export async function noChangeFromWeb(row: number, opt: SendOptions = {}): Promise<boolean> {
-  const r = await postJSON('noChangeFromWeb', { row, ...opt });
+  const r = await postJSON('noChangeFromWeb', { row, ...opt, confirm: true });
   return r === true || (r as { ok?: boolean })?.ok === true;
 }
+
 
 export async function getHistoryList(): Promise<HistoryItem[]> {
   const r = await postJSON('getHistoryList');
@@ -211,4 +212,21 @@ export async function formatText(text: string, max: number = 100): Promise<{ ok:
   }
   // 念のためのフォールバック
   return { ok: false, fixed: String((r as any)?.fixed || ''), summary: String((r as any)?.summary || '') };
+}
+
+export type DeleteQaRowResponse = {
+  ok: boolean;
+  deletedRow?: number;
+  topic?: string;
+  miibo?: { deleted: boolean; label?: string };
+  traceId?: string;
+  error?: string;
+};
+
+
+// 修正後（プロキシ統一）
+export async function deleteQaRow(row: number): Promise<DeleteQaRowResponse> {
+  const r = await postJSON<DeleteQaRowResponse>('deleteQaRow', { row, confirm: true });
+  // doPost は { ok, deletedRow, topic, miibo, traceId } を返す想定
+  return r as DeleteQaRowResponse;
 }
