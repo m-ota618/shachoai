@@ -1070,7 +1070,7 @@ export default function App() {
               </div>
 
               <div className="card">
-                <h3 className="card-title">初期投入：下書き一括転送</h3>
+                <h3 className="card-title">下書き一括転送</h3>
                 <div className="help" style={{ margin: '0 10px 8px 0' }}>
                   回答あり・未チェックの下書きを「回答済み」に一括処理します。まずはドライランで件数確認がおすすめです。
                 </div>
