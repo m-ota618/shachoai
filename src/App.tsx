@@ -145,7 +145,7 @@ function UrlListEditor(props: {
           />
           <button
             type="button"
-            className="btn btn-secondary"
+            className="btn btn-danger"
             onClick={() => {
               const next = urls.slice(0, i).concat(urls.slice(i + 1));
               commit(next.length ? next : ['']); // 最低1行は保持

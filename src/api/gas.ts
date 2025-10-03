@@ -27,7 +27,7 @@ const GAS_URL = `${API_BASE}/gas`;
 /** 相関IDの生成 */
 function newTraceId(): string {
   try {
-    const anyCrypto = (globalThis as { crypto?: { randomUUID?: () => string } });
+    const anyCrypto = (globalThis as unknown as { crypto?: { randomUUID?: () => string } });
     if (anyCrypto.crypto?.randomUUID) return anyCrypto.crypto.randomUUID();
   } catch {/* noop */}
   return `${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
@@ -67,7 +67,7 @@ export class ApiError extends Error {
   }
 }
 
-/* === 追加: 送信オプション型（冪等キーなどを渡す） === */
+/* === 送信オプション型（冪等キーなど） === */
 export type SendOptions = {
   idempotencyKey?: string; // 冪等化用キー（GAS 側へそのまま送る）
   rowHash?: string;        // 競合検出したい場合に利用（任意）
@@ -89,7 +89,7 @@ async function postJSON<T = unknown>(
     'X-Trace-Id': traceId,
   };
 
-  // ★ 追加：URL 先頭の slug をサーバへ渡す（安定テナント解決）
+  // URL 先頭の slug をサーバへ渡す（安定テナント解決）
   const slug = currentSlug();
   if (slug) headers['X-Tenant-Slug'] = slug;
 
@@ -154,17 +154,15 @@ export async function saveAnswer(row: number, answer: string, url: string): Prom
   return r === true || (r as { ok?: boolean })?.ok === true;
 }
 
-/* === 変更: 第2引数 opt を追加し、payload にマージ === */
+/* === 確定系：confirm を明示 === */
 export async function completeFromWeb(row: number, opt: SendOptions = {}): Promise<boolean> {
   const r = await postJSON('completeFromWeb', { row, ...opt, confirm: true });
   return r === true || (r as { ok?: boolean })?.ok === true;
 }
-
 export async function noChangeFromWeb(row: number, opt: SendOptions = {}): Promise<boolean> {
   const r = await postJSON('noChangeFromWeb', { row, ...opt, confirm: true });
   return r === true || (r as { ok?: boolean })?.ok === true;
 }
-
 
 export async function getHistoryList(): Promise<HistoryItem[]> {
   const r = await postJSON('getHistoryList');
@@ -203,17 +201,16 @@ export async function predictAnswerForRow(row: number): Promise<PredictResult> {
   return (r as { result?: PredictResult }).result ?? (r as PredictResult);
 }
 
-// 末尾あたりに追記
+/* 末尾ユーティリティ */
 export async function formatText(text: string, max: number = 100): Promise<{ ok: boolean; fixed: string; summary: string }> {
   const r = await postJSON('formatText', { text, max });
-  // GASが { ok, fixed, summary } を返す想定
   if (typeof r === 'object' && r !== null && (r as any).fixed !== undefined) {
     return r as any;
   }
-  // 念のためのフォールバック
   return { ok: false, fixed: String((r as any)?.fixed || ''), summary: String((r as any)?.summary || '') };
 }
 
+/* ===== 削除系 ===== */
 export type DeleteQaRowResponse = {
   ok: boolean;
   deletedRow?: number;
@@ -223,10 +220,34 @@ export type DeleteQaRowResponse = {
   error?: string;
 };
 
-
-// 修正後（プロキシ統一）
+/**
+ * データ編集（詳細）からの削除。
+ * 1) まず deleteQaRow を叩く
+ * 2) サーバが未対応（invalid/unknown action）の場合は deleteUpdateRow に自動フォールバック
+ * どちらも /api/gas プロキシ経由
+ */
 export async function deleteQaRow(row: number): Promise<DeleteQaRowResponse> {
-  const r = await postJSON<DeleteQaRowResponse>('deleteQaRow', { row, confirm: true });
-  // doPost は { ok, deletedRow, topic, miibo, traceId } を返す想定
-  return r as DeleteQaRowResponse;
+  // まずは deleteQaRow を試す
+  const tryPrimary = await postJSON<DeleteQaRowResponse>('deleteQaRow', { row, confirm: true }).catch((e: unknown) => {
+    // HTTP エラーの場合はそのまま投げ直し
+    throw e;
+  });
+
+  // 200 OK でも { ok:false, error:'invalid_action' | 'unknown action: ...' } の可能性があるので判定
+  const errCode = typeof tryPrimary === 'object' && tryPrimary !== null ? (tryPrimary as any).error : undefined;
+  const isInvalid =
+    (typeof errCode === 'string' && /invalid_action|unknown action/i.test(errCode)) ||
+    false;
+
+  if (!isInvalid) {
+    // 想定どおり or 別エラー（別エラーならそのまま返して呼び出し側で表示）
+    return tryPrimary as DeleteQaRowResponse;
+  }
+
+  // フォールバック：deleteUpdateRow を叩く（confirm は不要実装でも true を渡しておく）
+  const fallback = await postJSON<DeleteQaRowResponse>('deleteUpdateRow', { row, confirm: true });
+  // 正規化して返却（deletedRow を必ず付ける）
+  return typeof fallback === 'object' && fallback !== null
+    ? ({ deletedRow: row, ...fallback } as DeleteQaRowResponse)
+    : ({ ok: fallback === (true as any), deletedRow: row } as DeleteQaRowResponse);
 }
