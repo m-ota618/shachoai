@@ -238,6 +238,17 @@ textarea:focus, input[type="text"]:focus, input[type="url"]:focus, select:focus 
 .btn-primary:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .btn-secondary { background: #eaf6ff; color: #0b2540; border: 1px solid #cfe9fb; }
 .btn-secondary:hover { background: #def1ff; }
+.btn-danger {
+  background: #ef4444; /* red-500 相当 */
+  color: #fff;
+}
+.btn-danger:hover {
+  background: #dc2626; /* red-600 相当 */
+}
+.btn-danger:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
 
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .row > * { margin-bottom: 6px; }
@@ -378,4 +389,18 @@ textarea:focus, input[type="text"]:focus, input[type="url"]:focus, select:focus 
 .spinner {
   width: 14px;
   height: 14px;
+}
+
+/* === 強制: 危険ボタンは必ず赤 === */
+/* index.css の一番最後に置くこと */
+button.btn.btn-danger {
+  -webkit-appearance: none;
+  appearance: none;
+  background-color: #ef4444 !important; /* red-500 */
+  border: 1px solid #ef4444 !important;
+  color: #fff !important;
+}
+button.btn.btn-danger:hover:not(:disabled) {
+  background-color: #dc2626 !important; /* red-600 */
+  border-color: #dc2626 !important;
 }

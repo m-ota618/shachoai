@@ -48,7 +48,18 @@ const ACTION_VALIDATORS = {
     return true;
   },
   predictAnswerForRow: (p) => Number.isInteger(Number(p?.row)),
+
+  /* ▼ ここから追加分（削除・整形系） */
+  deleteQaRow: (p) =>
+    Number.isInteger(Number(p?.row)) && p?.confirm === true, // 破壊操作なので confirm:true を要求
+  deleteUpdateRow: (p) => Number.isInteger(Number(p?.row)),
+  deleteUpdateByHash: (p) => typeof (p?._hash ?? p?.hash) === 'string',
+  deleteTopicFromMiibo: (p) => typeof p?.topic === 'string' && p.topic.trim().length > 0,
+  formatText: (p) =>
+    typeof p?.text === 'string' &&
+    (p?.max == null || Number.isFinite(Number(p.max))),
 };
+
 
 /* ==================== helpers ==================== */
 function newTraceId(req) {

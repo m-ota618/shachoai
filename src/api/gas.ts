@@ -236,28 +236,34 @@ export type DeleteQaRowResponse = {
  * 2) サーバが未対応（invalid/unknown action）の場合は deleteUpdateRow に自動フォールバック
  * どちらも /api/gas プロキシ経由
  */
+// src/api/gas.ts（差し替え）
 export async function deleteQaRow(row: number): Promise<DeleteQaRowResponse> {
-  // まずは deleteQaRow を試す
-  const tryPrimary = await postJSON<DeleteQaRowResponse>('deleteQaRow', { row, confirm: true }).catch((e: unknown) => {
-    // HTTP エラーの場合はそのまま投げ直し
-    throw e;
-  });
+  try {
+    // まず正式アクション
+    const r = await postJSON<DeleteQaRowResponse>('deleteQaRow', { row, confirm: true });
 
-  // 200 OK でも { ok:false, error:'invalid_action' | 'unknown action: ...' } の可能性があるので判定
-  const errCode = typeof tryPrimary === 'object' && tryPrimary !== null ? (tryPrimary as any).error : undefined;
-  const isInvalid =
-    (typeof errCode === 'string' && /invalid_action|unknown action/i.test(errCode)) ||
-    false;
+    // 200でも error フィールドで invalid/unknown を返す実装に対応
+    const err = (r as any)?.error;
+    if (typeof err === 'string' && /invalid_action|unknown action/i.test(err)) {
+      // フォールバックへ
+      const fb = await postJSON<DeleteQaRowResponse>('deleteUpdateRow', { row, confirm: true });
+      return { deletedRow: row, ...(fb as object) } as DeleteQaRowResponse;
+    }
+    return r;
+  } catch (e: any) {
+    // 400 で投げられた ApiError をここで判定してフォールバック
+    const code = e?.code || '';
+    const raw  = e?.raw  || '';
+    const hitInvalid =
+      /invalid_action|unknown action/i.test(code) ||
+      /invalid_action|unknown action/i.test(raw)  ||
+      /invalid_action/i.test(String(e?.message || ''));
 
-  if (!isInvalid) {
-    // 想定どおり or 別エラー（別エラーならそのまま返して呼び出し側で表示）
-    return tryPrimary as DeleteQaRowResponse;
+    if (hitInvalid) {
+      const fb = await postJSON<DeleteQaRowResponse>('deleteUpdateRow', { row, confirm: true });
+      return { deletedRow: row, ...(fb as object) } as DeleteQaRowResponse;
+    }
+    throw e; // それ以外は本物の失敗として上に投げる
   }
-
-  // フォールバック：deleteUpdateRow を叩く（confirm は不要実装でも true を渡しておく）
-  const fallback = await postJSON<DeleteQaRowResponse>('deleteUpdateRow', { row, confirm: true });
-  // 正規化して返却（deletedRow を必ず付ける）
-  return typeof fallback === 'object' && fallback !== null
-    ? ({ deletedRow: row, ...fallback } as DeleteQaRowResponse)
-    : ({ ok: fallback === (true as any), deletedRow: row } as DeleteQaRowResponse);
 }
+
