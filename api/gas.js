@@ -1,4 +1,4 @@
-// api/gas.js  ← Vercel Node 関数（ESM: default export）
+// api/gas.js  ← Vercel Node 関数（ESM: default export）a
 import { createClient } from '@supabase/supabase-js';
 import { randomUUID, randomBytes } from 'node:crypto';
 
