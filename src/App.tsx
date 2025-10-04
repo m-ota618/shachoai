@@ -25,7 +25,7 @@ import type {
   PredictResult
 } from './types';
 import { showApiError } from './utils/error';
-import OutboxBanner from './components/OutboxBanner';
+import { startOutboxWorker } from './lib/outbox';
 import VoiceComposeBar from './components/VoiceComposeBar';
 
 
@@ -152,7 +152,7 @@ function UrlListEditor(props: {
             }}
             aria-label={`参照URL ${i + 1} を削除`}
           >
-            削除
+            URL削除
           </button>
         </div>
       ))}
@@ -190,6 +190,44 @@ function UrlListEditor(props: {
 const CardShell: React.FC<{ children?: React.ReactNode; }> = ({ children }) => {
   return <div className="card">{children}</div>;
 };
+
+/* =========================
+   tombstone（非表示）ユーティリティ
+   ========================= */
+const TOMBSTONE_KEY = 'planter:tombstone:v1';
+const TOMBSTONE_TTL_MS = 60 * 60 * 1000; // 1時間
+
+type Tombstone = { row: number; ts: number };
+
+function loadTombstones(): Set<number> {
+  try {
+    const raw = localStorage.getItem(TOMBSTONE_KEY);
+    if (!raw) return new Set();
+    const now = Date.now();
+    const arr: Tombstone[] = JSON.parse(raw);
+    const valid = arr.filter(x => now - x.ts < TOMBSTONE_TTL_MS);
+    if (valid.length !== arr.length) {
+      localStorage.setItem(TOMBSTONE_KEY, JSON.stringify(valid));
+    }
+    return new Set(valid.map(x => x.row));
+  } catch { return new Set(); }
+}
+function addTombstone(row: number) {
+  try {
+    const raw = localStorage.getItem(TOMBSTONE_KEY);
+    const arr: Tombstone[] = raw ? JSON.parse(raw) : [];
+    arr.push({ row, ts: Date.now() });
+    localStorage.setItem(TOMBSTONE_KEY, JSON.stringify(arr));
+  } catch {}
+}
+function removeTombstone(row: number) {
+  try {
+    const raw = localStorage.getItem(TOMBSTONE_KEY);
+    const arr: Tombstone[] = raw ? JSON.parse(raw) : [];
+    const next = arr.filter(x => x.row !== row);
+    localStorage.setItem(TOMBSTONE_KEY, JSON.stringify(next));
+  } catch {}
+}
 
 export default function App() {
   const queryClient = useQueryClient();
@@ -241,6 +279,11 @@ export default function App() {
      ========================= */
   const [detail, setDetail] = useState<DetailT | null>(null);
   const [tabDetail, setTabDetail] = useState(false);
+
+  // tombstone（非表示セット）
+  const [hiddenRows, setHiddenRows] = useState<Set<number>>(() => loadTombstones());
+  // 同一行の「連打」や重複キュー積みを防止
+  const inflightRowsRef = useRef<Set<number>>(new Set());
 
   // クリック時：キャッシュがあれば即表示→裏で先読み
   const openDetail = (() => {
@@ -319,7 +362,7 @@ export default function App() {
     setDelBusy(true);
     try {
       const res = await deleteQaRow(updCur.row); // /api/gas 統一版
-      const miiboMsg = res?.miibo?.deleted ? '（miiboへ反映済）' : '';
+      const miiboMsg = res?.miibo?.deleted ? '（chatbotへ反映済）' : '';
       alert(`削除しました。${miiboMsg}`);
 
       // 一覧へ戻って再取得
@@ -503,6 +546,10 @@ export default function App() {
     )
   };
 
+  // フィルタリング（tombstoneに入っている行は一覧から非表示）
+  const visibleUnans = unans.filter(it => !hiddenRows.has(it.row));
+  const visibleDrafts = drafts.filter(it => !hiddenRows.has(it.row));
+
   // レンダ
   return (
     <>
@@ -561,8 +608,6 @@ export default function App() {
 
         {/* Main content */}
         <main className="content">
-          {/* ★ 送信バナー（Outbox件数>0の時だけ表示される） */}
-          <OutboxBanner />
 
           {/* To Top Button */}
           <button
@@ -579,11 +624,11 @@ export default function App() {
               <h2 className="page-title">未回答</h2>
               {unansLoading ? (
                 <div className="skeleton">読み込み中...</div>
-              ) : unans.length === 0 ? (
+              ) : visibleUnans.length === 0 ? (
                 <div className="empty">未回答はありません</div>
               ) : (
                 <div className="cards">
-                  {unans.map((it) => (
+                  {visibleUnans.map((it) => (
                     <CardShell key={it.row}>
                       <div
                         className="q"
@@ -619,11 +664,11 @@ export default function App() {
               <h2 className="page-title">下書き</h2>
               {draftsLoading ? (
                 <div className="skeleton">読み込み中...</div>
-              ) : drafts.length === 0 ? (
+              ) : visibleDrafts.length === 0 ? (
                 <div className="empty">下書きはありません</div>
               ) : (
                 <div className="cards">
-                  {drafts.map((it) => {
+                  {visibleDrafts.map((it) => {
                     const clip = (it.draft || '').toString();
                     const clipText = clip.length > 80 ? clip.slice(0, 80) + '…' : clip;
                     return (
@@ -821,21 +866,42 @@ export default function App() {
                           alert('回答を入力してください');
                           return;
                         }
-                        // 1) 先に下書き保存（失敗なら中断）
-                        const ok1 = await saveAnswer(detail.row, detail.answer || '', detail.url || '');
-                        if (!ok1) {
-                          alert('保存に失敗しました');
-                          return;
+                        if (!confirm('この回答を公開用へ転送します。よろしいですか？')) return;
+
+                        // 二重押し防止
+                        if (inflightRowsRef.current.has(detail.row)) return;
+                        inflightRowsRef.current.add(detail.row);
+
+                        try {
+                          // 1) 先に下書き保存（失敗なら中断）
+                          const ok1 = await saveAnswer(detail.row, detail.answer || '', detail.url || '');
+                          if (!ok1) {
+                            alert('保存に失敗しました');
+                            inflightRowsRef.current.delete(detail.row);
+                            return;
+                          }
+                          // 2) Outbox に積む（裏で送る／バナーは保険）
+                          await pushOutbox({
+                            type: 'COMPLETE',
+                            row: detail.row,
+                            payload: { answer: detail.answer, url: detail.url || '' },
+                          });
+                          // 3) tombstone へ追加して即座に見た目から消す
+                          setHiddenRows(prev => {
+                            const next = new Set(prev);
+                            next.add(detail.row);
+                            return next;
+                          });
+                          addTombstone(detail.row);
+                          // 4) 詳細を閉じて一覧へ戻る（サーバ確定まではinvalidateしない）
+                          setTabDetail(false);
+                        } catch {
+                          // push が失敗するケースは稀だが、失敗時はユーザーへ明示
+                          alert('送信待ちに保存しました（ネット不調など。後で自動再送します）');
+                          setTabDetail(false);
+                        } finally {
+                          inflightRowsRef.current.delete(detail.row);
                         }
-                        // 2) Outbox に積む（送信はバナーで明示）
-                        await pushOutbox({
-                          type: 'COMPLETE',
-                          row: detail.row,
-                          payload: { answer: detail.answer, url: detail.url || '' },
-                        });
-                        alert('未送信キューに追加しました（上部バナーから送信）');
-                        // 3) 詳細を閉じる（この時点ではサーバ状態は未変更）
-                        setTabDetail(false);
                       }}
                     >
                       回答済みにする（公開用へ転送）
@@ -844,10 +910,28 @@ export default function App() {
                       className="btn btn-secondary"
                       onClick={async () => {
                         if (!detail) return;
-                        if (!confirm('「変更しなくて良い」にして履歴に送信キューへ追加します。よろしいですか？')) return;
-                        await pushOutbox({ type: 'NOCHANGE', row: detail.row });
-                        alert('未送信キューに追加しました（上部バナーから送信）');
-                        setTabDetail(false);
+                        if (!confirm('「変更しなくて良い」で履歴へ転送します。よろしいですか？')) return;
+
+                        // 二重押し防止
+                        if (inflightRowsRef.current.has(detail.row)) return;
+                        inflightRowsRef.current.add(detail.row);
+
+                        try {
+                          await pushOutbox({ type: 'NOCHANGE', row: detail.row });
+                          // tombstone で非表示に
+                          setHiddenRows(prev => {
+                            const next = new Set(prev);
+                            next.add(detail.row);
+                            return next;
+                          });
+                          addTombstone(detail.row);
+                          setTabDetail(false);
+                        } catch {
+                          alert('送信待ちに保存しました（後で自動再送します）');
+                          setTabDetail(false);
+                        } finally {
+                          inflightRowsRef.current.delete(detail.row);
+                        }
                       }}
                     >
                       変更しなくて良い

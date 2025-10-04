@@ -18,7 +18,7 @@ const STORE_NAME = "planter-idb";
 const KEY_OUTBOX = "outbox/v1";
 const store = createStore(STORE_NAME, "kv");
 
-// ---- in-memory subscribers（簡易イベント） ----
+// ---- in-memory subscribers（今後使わなくても残してOK） ----
 type Listener = (items: OutboxItem[]) => void;
 const listeners = new Set<Listener>();
 const notify = async () => {
@@ -30,7 +30,6 @@ const notify = async () => {
 
 export const subscribeOutbox = (fn: Listener) => {
   listeners.add(fn);
-  // 初期状態を即時通知しておくとバナーが一発で反映される
   (async () => { try { fn(await getAll()); } catch {} })();
   return () => listeners.delete(fn);
 };
@@ -54,23 +53,39 @@ export function nowMs() {
   return Date.now();
 }
 
+/** 既存キューに同一(row,type)がいれば payload を上書き＆前倒し。なければ追加。 */
 export async function enqueue(
   op: Omit<OutboxItem, "id" | "tryCount" | "nextAt" | "createdAt">
 ) {
   const items = await getAll();
-  const item: OutboxItem = {
-    ...op,
-    id: uuid(),
-    tryCount: 0,
-    nextAt: nowMs(),
-    createdAt: nowMs(),
-  };
-  items.push(item);
-  await setAll(items);
-  return item.id;
+
+  const idx = items.findIndex((x) => x.row === op.row && x.type === op.type);
+  if (idx >= 0) {
+    // デデュープ：payloadは上書き、nextAt前倒し
+    const cur = items[idx];
+    items[idx] = {
+      ...cur,
+      payload: { ...(cur.payload || {}), ...(op as any).payload },
+      nextAt: nowMs(),
+    };
+    await setAll(items);
+  } else {
+    const item: OutboxItem = {
+      ...op,
+      id: uuid(),
+      tryCount: 0,
+      nextAt: nowMs(),
+      createdAt: nowMs(),
+    };
+    items.push(item);
+    await setAll(items);
+  }
+
+  // 追加/更新したらすぐに非同期で送信キック（awaitしない）
+  void kick();
 }
 
-// 互換エイリアス（既存コードの push 呼び出しに対応）
+/** 互換エイリアス（既存コードの push 呼び出しに対応） */
 export const push = enqueue;
 
 export async function remove(id: string) {
@@ -109,12 +124,7 @@ export async function getReady(): Promise<OutboxItem[]> {
   return items.filter((x) => x.nextAt <= t);
 }
 
-/**
- * submitReady: 期限到来分だけ“今すぐ送信”
- * - 成功: outbox から remove
- * - 失敗: markBackoff（指数バックオフ）, 残す
- * - 戻り値は UI バナー用の集計
- */
+/** 実際の送信処理（1回分） */
 export async function submitReady(): Promise<{
   processed: number;
   succeeded: number;
@@ -127,7 +137,7 @@ export async function submitReady(): Promise<{
   for (const it of ready) {
     try {
       if (it.type === "COMPLETE") {
-        const ok = await completeFromWeb(it.row);
+        const ok = await completeFromWeb(it.row); // GAS側はconfirm:true実装済みであること
         if (!ok) throw new Error("completeFromWeb returned false");
       } else if (it.type === "NOCHANGE") {
         const ok = await noChangeFromWeb(it.row);
@@ -143,7 +153,7 @@ export async function submitReady(): Promise<{
     }
   }
 
-  // 購読者更新
+  // 通知（購読者がいれば更新される／今はバナー非表示でも問題なし）
   await notify();
 
   return {
@@ -151,4 +161,58 @@ export async function submitReady(): Promise<{
     succeeded,
     failed,
   };
+}
+
+/** 即時キック（awaitしないで投げる用） */
+async function kick() {
+  if (!navigator.onLine) return;
+  try { await submitReady(); } catch {}
+}
+
+/** 自動送信ワーカー（単一起動ガードつき） */
+export function startOutboxWorker(opts?: {
+  intervalMs?: number;           // 既定 5000ms
+  runWhenHidden?: boolean;       // 既定 false（タブ非表示時はサボる）
+}) {
+  if (typeof window === "undefined") return;
+  const g: any = window as any;
+  if (g.__planterOutboxWorker) return; // 二重起動防止
+
+  const intervalMs = Math.max(1000, opts?.intervalMs ?? 5000);
+  const runWhenHidden = !!opts?.runWhenHidden;
+
+  const shouldRun = () =>
+    navigator.onLine &&
+    (runWhenHidden || document.visibilityState === "visible");
+
+  const tick = async () => {
+    if (!shouldRun()) return;
+    try { await submitReady(); } catch {}
+  };
+
+  const id = window.setInterval(tick, intervalMs);
+
+  // 画面復帰/オンライン復帰で即実行
+  const onVis = () => { void tick(); };
+  const onOnline = () => { void tick(); };
+  document.addEventListener("visibilitychange", onVis);
+  window.addEventListener("online", onOnline);
+
+  // すぐ一発
+  void tick();
+
+  g.__planterOutboxWorker = {
+    stop() {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("online", onOnline);
+      g.__planterOutboxWorker = null;
+    }
+  };
+}
+
+/** 便利関数：このrow・typeが送信待ちにいるか */
+export async function hasPending(row: number, type?: OpType) {
+  const items = await getAll();
+  return items.some((x) => x.row === row && (!type || x.type === type));
 }
