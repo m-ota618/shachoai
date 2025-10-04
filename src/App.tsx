@@ -1029,17 +1029,13 @@ export default function App() {
                           const ans = it.answer || '';
                           const ansClip = ans.length > 120 ? ans.slice(0, 120) + '…' : ans;
                           const topic = it.topicKey || '';
-                          const area = it.area || it.topicName || '';
                           return (
                             <div key={it.row} className="card" onClick={() => openUpdateDetail(it)}>
                               <div className="q">{it.question || '（無題）'}</div>
                               <div className="meta">
                                 <span className="k">Topic</span>
-                                <span className="badge" style={badgeStyle(topic)}>{topic}</span>
-                                　
-                                <span className="k">Area</span>
-                                <span className="badge">{area}</span>
-                                　{it.syncedAt ? <span className="badge badge-light">最終同期 {it.syncedAt}</span> : null}
+                                <span className="badge" style={badgeStyle(topic)}>{topic}</span>                               
+                                {it.syncedAt ? <span className="badge badge-light">最終同期 {it.syncedAt}</span> : null}
                               </div>
                               <div className="meta">回答：{ansClip}</div>
                             </div>
