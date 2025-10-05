@@ -134,6 +134,10 @@ export async function submitReady(): Promise<{
   let succeeded = 0;
   let failed = 0;
 
+  // ★ 送信結果をUIへ伝えるための行番号リスト
+  const successRows: number[] = [];
+  const failedRows: number[] = [];
+
   for (const it of ready) {
     try {
       if (it.type === "COMPLETE") {
@@ -146,15 +150,26 @@ export async function submitReady(): Promise<{
         throw new Error("unknown op type");
       }
       succeeded += 1;
+      successRows.push(it.row);
       await remove(it.id);
     } catch {
       failed += 1;
+      failedRows.push(it.row);
       await markBackoff(it.id);
     }
   }
 
   // 通知（購読者がいれば更新される／今はバナー非表示でも問題なし）
   await notify();
+
+  // ★ 成功/失敗の結果をアプリへ通知（App.tsx 側で受け取って invalidate などに使う）
+  try {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("outbox:sync", { detail: { successRows, failedRows } })
+      );
+    }
+  } catch {}
 
   return {
     processed: ready.length,
@@ -215,4 +230,60 @@ export function startOutboxWorker(opts?: {
 export async function hasPending(row: number, type?: OpType) {
   const items = await getAll();
   return items.some((x) => x.row === row && (!type || x.type === type));
+}
+
+/* =========================================================
+ * 追加ユーティリティ：重複チェック（任意で利用）
+ * ========================================================= */
+
+/** 現在キューにある row を集合で返す（UI同期用） */
+export async function listPendingRows(): Promise<Set<number>> {
+  const items = await getAll();
+  return new Set(items.map(i => i.row));
+}
+
+/** 指定 row の未処理が Outbox に存在するか？（typeは問わない） */
+export async function hasPendingForRow(row: number): Promise<boolean> {
+  const items = await getAll();
+  return items.some(i => i.row === row);
+}
+
+/**
+ * 重複排除つき enqueue:
+ * - 同じ row の未処理が既にあればスキップ（typeは問わない）
+ * - 既存 enqueue は (row,type) でデデュープするが、こちらは row 単位で抑止
+ * - 戻り値: { id?: string; skipped: boolean; reason?: string }
+ */
+export async function enqueueUnique(
+  op: Omit<OutboxItem, "id" | "tryCount" | "nextAt" | "createdAt">
+): Promise<{ id?: string; skipped: boolean; reason?: string }> {
+  const exists = await hasPendingForRow(op.row);
+  if (exists) return { skipped: true, reason: "duplicate-row" };
+  const items = await getAll();
+
+  // (row,type) が既にあれば payload 上書き＆前倒し（通常 enqueue と同等の扱い）
+  const idx = items.findIndex((x) => x.row === op.row && x.type === op.type);
+  if (idx >= 0) {
+    const cur = items[idx];
+    items[idx] = {
+      ...cur,
+      payload: { ...(cur.payload || {}), ...(op as any).payload },
+      nextAt: nowMs(),
+    };
+    await setAll(items);
+    void kick();
+    return { skipped: false, id: cur.id };
+  }
+
+  const item: OutboxItem = {
+    ...op,
+    id: uuid(),
+    tryCount: 0,
+    nextAt: nowMs(),
+    createdAt: nowMs(),
+  };
+  items.push(item);
+  await setAll(items);
+  void kick();
+  return { id: item.id, skipped: false };
 }
