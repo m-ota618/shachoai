@@ -187,10 +187,26 @@ function UrlListEditor(props: {
 /* =========================
    カードコンテナ（Ghost表示は廃止）
    ========================= */
-const CardShell: React.FC<{ children?: React.ReactNode; }> = ({ children }) => {
-  return <div className="card">{children}</div>;
+const CardShell: React.FC<{ children?: React.ReactNode; onActivate?: () => void }> = ({ children, onActivate }) => {
+  const a11y = onActivate
+    ? {
+        role: 'button' as const,
+        tabIndex: 0,
+        onClick: () => onActivate(),
+        onKeyDown: (e: React.KeyboardEvent) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onActivate();
+          }
+        },
+      }
+    : {};
+  return (
+    <div className={`card${onActivate ? ' clickable' : ''}`} {...a11y}>
+      {children}
+    </div>
+  );
 };
-
 /* =========================
    tombstone（非表示）ユーティリティ
    ========================= */
@@ -282,7 +298,13 @@ export default function App() {
 
   // tombstone（非表示セット）
   const [hiddenRows, setHiddenRows] = useState<Set<number>>(() => loadTombstones());
-  // 同一行の「連打」や重複キュー積みを防止
+
+  // 送信中（UI表示用）
+  const [sendingRows, setSendingRows] = useState<Set<number>>(new Set());
+  const markSending = (row: number) => setSendingRows(s => new Set([...s, row]));
+  const unmarkSending = (row: number) => setSendingRows(s => { const n = new Set(s); n.delete(row); return n; });
+
+  // （旧）同一行の「連打」防止—sendingRowsで代替するが一応残置
   const inflightRowsRef = useRef<Set<number>>(new Set());
 
   // クリック時：キャッシュがあれば即表示→裏で先読み
@@ -503,6 +525,53 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
+  // Outbox 自動送信ワーカーを常駐起動
+  useEffect(() => {
+    startOutboxWorker({ intervalMs: 5000, runWhenHidden: false });
+  }, []);
+
+  // 3-2: Outbox 送信結果イベント(outbox:sync)を購読し、UIとキャッシュを同期
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { successRows = [], failedRows = [] } =
+        (e as CustomEvent<{ successRows?: number[]; failedRows?: number[] }>).detail || {};
+
+      // 送信中フラグを解除
+      setSendingRows(prev => {
+        const next = new Set(prev);
+        [...successRows, ...failedRows].forEach(r => next.delete(r));
+        return next;
+      });
+
+      if (successRows.length) {
+        // 成功した行は tombstone に入れて以後非表示を継続
+        setHiddenRows(prev => {
+          const next = new Set(prev);
+          successRows.forEach(r => next.add(r));
+          return next;
+        });
+        successRows.forEach(r => {
+          addTombstone(r);
+          // 詳細キャッシュ掃除
+          queryClient.removeQueries({ queryKey: ['detail', r], exact: true });
+        });
+        // 一覧を最新の行番号で再描画
+        queryClient.invalidateQueries({ queryKey: ['unans'] });
+        queryClient.invalidateQueries({ queryKey: ['drafts'] });
+      }
+
+      if (failedRows.length) {
+        // 軽い通知（自動でバックオフ再試行される）
+        console.warn('Outbox failed rows:', failedRows);
+        // 必要ならトースト等に差し替え
+        alert(`一部の送信に失敗しました（#${failedRows.join(', ')}）。数分後に自動再試行します。`);
+      }
+    };
+
+    window.addEventListener('outbox:sync', handler as EventListener);
+    return () => window.removeEventListener('outbox:sync', handler as EventListener);
+  }, [queryClient]);
+
   // === Icons (inline SVG) ===
   const I = {
     burger: (
@@ -629,18 +698,12 @@ export default function App() {
               ) : (
                 <div className="cards">
                   {visibleUnans.map((it) => (
-                    <CardShell key={it.row}>
+                    <CardShell
+                      key={it.row}
+                      onActivate={() => openDetail(it.row)}
+                    >
                       <div
-                        className="q"
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => openDetail(it.row)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            openDetail(it.row);
-                          }
-                        }}
+                        className={`q ${sendingRows.has(it.row) ? 'is-sending' : ''}`}
                         onMouseEnter={() => {
                           // カードホバーで detail を先読み
                           queryClient.prefetchQuery({ queryKey: ['detail', it.row], queryFn: () => getDetail(it.row), staleTime: 5 * 60_000 });
@@ -650,8 +713,14 @@ export default function App() {
                         }}
                       >
                         {it.question}
+                        {sendingRows.has(it.row) && (
+                          <div className="sending-overlay" aria-hidden>
+                            <span className="spinner" /> 送信中…
+                          </div>
+                        )}
                       </div>
                     </CardShell>
+
                   ))}
                 </div>
               )}
@@ -672,27 +741,36 @@ export default function App() {
                     const clip = (it.draft || '').toString();
                     const clipText = clip.length > 80 ? clip.slice(0, 80) + '…' : clip;
                     return (
-                      <CardShell key={it.row}>
+                      <CardShell
+                        key={it.row}
+                        onActivate={() => !sendingRows.has(it.row) && openDetail(it.row)}
+                      >
                         <div
-                          className="q"
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => openDetail(it.row)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
-                              openDetail(it.row);
-                            }
-                          }}
+                          className={`q ${sendingRows.has(it.row) ? 'is-sending' : ''}`}
                           onMouseEnter={() => {
-                            queryClient.prefetchQuery({ queryKey: ['detail', it.row], queryFn: () => getDetail(it.row), staleTime: 5 * 60_000 });
+                            // カードホバーで detail を先読み
+                            queryClient.prefetchQuery({
+                              queryKey: ['detail', it.row],
+                              queryFn: () => getDetail(it.row),
+                              staleTime: 5 * 60_000
+                            });
                           }}
                           onTouchStart={() => {
-                            queryClient.prefetchQuery({ queryKey: ['detail', it.row], queryFn: () => getDetail(it.row), staleTime: 5 * 60_000 });
+                            queryClient.prefetchQuery({
+                              queryKey: ['detail', it.row],
+                              queryFn: () => getDetail(it.row),
+                              staleTime: 5 * 60_000
+                            });
                           }}
                         >
                           {it.question}
+                          {sendingRows.has(it.row) && (
+                            <div className="sending-overlay" aria-hidden>
+                              <span className="spinner" /> 送信中…
+                            </div>
+                          )}
                         </div>
+
                         <div className="meta">下書き：{clipText}</div>
                       </CardShell>
                     );
@@ -852,6 +930,8 @@ export default function App() {
                           queryClient.setQueryData<DetailT>(['detail', detail.row], { ...detail });
                           // drafts を軽く更新
                           queryClient.invalidateQueries({ queryKey: ['drafts'] });
+                          // ① 保存後は自動で一覧へ戻す
+                          setTabDetail(false);
                         }
                       }}
                     >
@@ -859,6 +939,7 @@ export default function App() {
                     </button>
                     <button
                       className="btn btn-primary"
+                      disabled={sendingRows.has(detail.row)}
                       style={{ background: '#2563eb', borderColor: '#2563eb', color: '#fff' }}
                       onClick={async () => {
                         if (!detail) return;
@@ -866,75 +947,71 @@ export default function App() {
                           alert('回答を入力してください');
                           return;
                         }
+                        if (sendingRows.has(detail.row)) return;
                         if (!confirm('この回答を公開用へ転送します。よろしいですか？')) return;
 
-                        // 二重押し防止
-                        if (inflightRowsRef.current.has(detail.row)) return;
-                        inflightRowsRef.current.add(detail.row);
-
+                        markSending(detail.row);
                         try {
                           // 1) 先に下書き保存（失敗なら中断）
                           const ok1 = await saveAnswer(detail.row, detail.answer || '', detail.url || '');
                           if (!ok1) {
                             alert('保存に失敗しました');
-                            inflightRowsRef.current.delete(detail.row);
                             return;
                           }
-                          // 2) Outbox に積む（裏で送る／バナーは保険）
+                          // 2) Outbox に積む（裏で送る）
                           await pushOutbox({
                             type: 'COMPLETE',
                             row: detail.row,
                             payload: { answer: detail.answer, url: detail.url || '' },
                           });
-                          // 3) tombstone へ追加して即座に見た目から消す
-                          setHiddenRows(prev => {
-                            const next = new Set(prev);
-                            next.add(detail.row);
-                            return next;
-                          });
-                          addTombstone(detail.row);
-                          // 4) 詳細を閉じて一覧へ戻る（サーバ確定まではinvalidateしない）
+
+                          // 3) detailキャッシュ掃除→一覧の最新化
+                          queryClient.removeQueries({ queryKey: ['detail', detail.row], exact: true });
+                          await Promise.all([
+                            queryClient.invalidateQueries({ queryKey: ['unans'] }),
+                            queryClient.invalidateQueries({ queryKey: ['drafts'] }),
+                          ]);
+
+                          // 4) ① 自動で一覧へ戻す
                           setTabDetail(false);
                         } catch {
-                          // push が失敗するケースは稀だが、失敗時はユーザーへ明示
-                          alert('送信待ちに保存しました（ネット不調など。後で自動再送します）');
+                          alert('送信キュー追加に失敗しました');
                           setTabDetail(false);
                         } finally {
-                          inflightRowsRef.current.delete(detail.row);
+                          unmarkSending(detail.row);
                         }
                       }}
                     >
-                      回答済みにする（公開用へ転送）
+                      {sendingRows.has(detail.row) ? '送信中…' : '回答済みにする（公開用へ転送）'}
                     </button>
                     <button
                       className="btn btn-secondary"
+                      disabled={sendingRows.has(detail.row)}
                       onClick={async () => {
                         if (!detail) return;
+                        if (sendingRows.has(detail.row)) return;
                         if (!confirm('「変更しなくて良い」で履歴へ転送します。よろしいですか？')) return;
 
-                        // 二重押し防止
-                        if (inflightRowsRef.current.has(detail.row)) return;
-                        inflightRowsRef.current.add(detail.row);
-
+                        markSending(detail.row);
                         try {
                           await pushOutbox({ type: 'NOCHANGE', row: detail.row });
-                          // tombstone で非表示に
-                          setHiddenRows(prev => {
-                            const next = new Set(prev);
-                            next.add(detail.row);
-                            return next;
-                          });
-                          addTombstone(detail.row);
+
+                          queryClient.removeQueries({ queryKey: ['detail', detail.row], exact: true });
+                          await Promise.all([
+                            queryClient.invalidateQueries({ queryKey: ['unans'] }),
+                            queryClient.invalidateQueries({ queryKey: ['drafts'] }),
+                          ]);
+
                           setTabDetail(false);
                         } catch {
-                          alert('送信待ちに保存しました（後で自動再送します）');
+                          alert('送信キュー追加に失敗しました');
                           setTabDetail(false);
                         } finally {
-                          inflightRowsRef.current.delete(detail.row);
+                          unmarkSending(detail.row);
                         }
                       }}
                     >
-                      変更しなくて良い
+                      {sendingRows.has(detail.row) ? '送信中…' : '変更しなくて良い'}
                     </button>
                     <button className="btn btn-secondary" onClick={() => setTabDetail(false)}>
                       戻る
@@ -1034,7 +1111,8 @@ export default function App() {
                               <div className="q">{it.question || '（無題）'}</div>
                               <div className="meta">
                                 <span className="k">Topic</span>
-                                <span className="badge" style={badgeStyle(topic)}>{topic}</span>                               
+                                <span className="badge" style={badgeStyle(topic)}>{topic}</span>
+
                                 {it.syncedAt ? <span className="badge badge-light">最終同期 {it.syncedAt}</span> : null}
                               </div>
                               <div className="meta">回答：{ansClip}</div>
